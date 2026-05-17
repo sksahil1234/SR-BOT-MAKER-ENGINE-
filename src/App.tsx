@@ -41,9 +41,89 @@ const FEATURES = [
   { id: '08', title: 'Webhook Bridge', desc: 'Instant feedback loops for automated payment verification.', icon: Globe },
 ];
 
+import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
+import VerifyPage from './components/VerifyPage';
+
 export default function App() {
-  const [hubStatus, setHubStatus] = useState<any>(null);
+  return (
+    <Router>
+      <Routes>
+        <Route path="/" element={<MainDashboard />} />
+        <Route path="/verify" element={<VerifyPage />} />
+      </Routes>
+    </Router>
+  );
+}
+
+function MainDashboard() {
+  const [hubStatus, setHubStatus] = useState<any>({
+    status: "online",
+    hubActive: false,
+    hubUsername: "",
+    totalNodes: 0,
+    totalUsers: 0,
+    engineVersion: "V2.5-ADVANCED-PRO",
+    logs: [],
+    liveBots: 0,
+    offlineBots: 0,
+    serverSpeed: "0ms",
+    loadAverage: "0%"
+  });
   const [loading, setLoading] = useState(true);
+  const [initialSync, setInitialSync] = useState(true);
+  const [templates, setTemplates] = useState<any[]>([]);
+  const [nodes, setNodes] = useState<any[]>([]);
+  const [activeTab, setActiveTab] = useState<'monitor' | 'templates' | 'manage'>('monitor');
+  const [selectedNode, setSelectedNode] = useState<string>("");
+  const [updatingNode, setUpdatingNode] = useState(false);
+
+  useEffect(() => {
+    const fetchTemplates = async () => {
+      try {
+        const res = await fetch('/api/templates');
+        const data = await res.json();
+        setTemplates(data);
+      } catch (e) {
+        console.error("Template load fail", e);
+      }
+    };
+    fetchTemplates();
+  }, []);
+
+  const fetchNodes = async () => {
+    try {
+      const res = await fetch('/api/nodes');
+      const data = await res.json();
+      setNodes(data);
+    } catch (e) {
+      console.error("Nodes load fail", e);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab === 'manage') {
+      fetchNodes();
+    }
+  }, [activeTab]);
+
+  const switchTemplate = async (nodeId: string, templateId: string) => {
+    setUpdatingNode(true);
+    try {
+      const res = await fetch(`/api/nodes/${nodeId}/template`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ template: templateId })
+      });
+      if (res.ok) {
+        alert("✅ Template applied successfully! Sub-bot buttons will update instantly.");
+        fetchNodes();
+      }
+    } catch (e) {
+      alert("❌ Switch failed. Check server logs.");
+    } finally {
+      setUpdatingNode(false);
+    }
+  };
 
   useEffect(() => {
     let failCount = 0;
@@ -51,77 +131,42 @@ export default function App() {
       try {
         const res = await fetch('/api/status');
         if (!res.ok) {
-          const text = await res.text();
-          throw new Error(`HTTP ${res.status}: ${text.substring(0, 100)}`);
+          throw new Error(`HTTP ${res.status}`);
         }
         const data = await res.json();
         setHubStatus(data);
         failCount = 0;
       } catch (err: any) {
-        console.error("Link Failure:", err);
+        console.warn("Link Synchronization Check:", err.message);
         failCount++;
-        // Refresh page if multiple consecutive failures to clear potential stuck state
-        if (failCount > 10) {
-           window.location.reload();
-        }
-        // If it's a "Failed to fetch", the server might be restarting
-        if (err.message === 'Failed to fetch') {
-           setHubStatus((prev: any) => ({ ...prev, isRestarting: true }));
+        // If we fail too many times, assume link interruption but keep rendering
+        if (failCount > 5) {
+          setHubStatus((prev: any) => ({ ...prev, hubActive: false }));
         }
       } finally {
         setLoading(false);
+        setInitialSync(false);
       }
     };
     fetchStatus();
-    const interval = setInterval(fetchStatus, 3000);
+    const interval = setInterval(fetchStatus, 5000);
     return () => clearInterval(interval);
   }, []);
 
-  if (loading && !hubStatus) {
+  if (initialSync) {
     return (
-      <div className={`min-h-screen ${THEME.bg} flex flex-col items-center justify-center font-mono`}>
+      <div className={`min-h-screen ${THEME.bg} flex flex-col items-center justify-center font-mono p-4`}>
         <div className="relative">
           <Terminal className={`w-16 h-16 ${THEME.accent} animate-pulse`} />
           <div className="absolute inset-0 border-2 border-orange-600/20 rounded-full scale-150 animate-ping" />
         </div>
-        <span className="mt-12 text-[10px] tracking-[0.8em] text-gray-500 uppercase animate-pulse">Establishing Secure Uplink</span>
-      </div>
-    );
-  }
-
-  if (!loading && (!hubStatus || hubStatus.isRestarting)) {
-    return (
-      <div className={`min-h-screen ${THEME.bg} flex flex-col items-center justify-center font-mono p-8 text-center`}>
-        <div className="relative mb-8">
-          <Terminal className={`w-16 h-16 ${hubStatus?.isRestarting ? 'text-orange-600 animate-pulse' : 'text-red-600'}`} />
-          <div className={`absolute inset-0 border-2 ${hubStatus?.isRestarting ? 'border-orange-600/20' : 'border-red-600/20'} rounded-full scale-150 animate-pulse`} />
-        </div>
-        <h2 className={`text-xl font-black ${hubStatus?.isRestarting ? 'text-orange-600' : 'text-red-600'} uppercase tracking-tighter mb-4`}>
-          {hubStatus?.isRestarting ? 'System Synchronizing' : 'Uplink Failure'}
-        </h2>
-        <p className="text-gray-500 max-w-sm text-[10px] leading-relaxed uppercase tracking-widest mb-8">
-          {hubStatus?.isRestarting 
-            ? 'The SR Engine kernel is hot-reloading its configuration mesh. Please standby for link re-establishment.'
-            : 'Unable to establish secure connection with the SR deployment mesh. The kernel may be offline.'}
-        </p>
-
-        {hubStatus?.logs && (
-          <div className="w-full max-w-lg bg-black/40 border border-white/5 p-4 mb-8 text-left h-48 overflow-y-auto custom-scrollbar">
-             <div className="text-[9px] text-orange-600/50 mb-2 uppercase tracking-widest border-b border-white/5 pb-1">Core Kernel Logs</div>
-             {hubStatus.logs.slice().reverse().map((log: string, i: number) => (
-               <div key={i} className="text-[9px] text-gray-600 mb-1 font-mono break-all leading-tight">
-                 <span className="text-orange-600/30 mr-2">{'>'}</span>
-                 {log}
-               </div>
-             ))}
-          </div>
-        )}
-
+        <span className="mt-12 text-[10px] tracking-[0.8em] text-gray-500 uppercase animate-pulse text-center">Establishing Secure Uplink</span>
+        
         <button 
-          onClick={() => window.location.reload()}
-          className={`px-8 py-3 border ${hubStatus?.isRestarting ? 'border-orange-600 text-orange-600' : 'border-red-600 text-red-600'} text-[10px] font-black uppercase tracking-[0.2em] hover:bg-orange-600 hover:text-black transition-all`}
+          onClick={() => setInitialSync(false)}
+          className="mt-8 text-[9px] text-gray-700 uppercase tracking-widest hover:text-orange-600 transition-colors"
         >
-          {hubStatus?.isRestarting ? 'Awaiting Protocol' : 'Re-establish Link'}
+          [ Bypass Synchronization ]
         </button>
       </div>
     );
@@ -141,22 +186,43 @@ export default function App() {
             </div>
             <div className="flex flex-col">
               <span className={`text-lg font-black tracking-tighter leading-none`}>SR TECHNOLOGY LTD™</span>
-              <span className={`text-[8px] font-bold ${THEME.secondary} tracking-[0.4em] uppercase`}>Advanced Deploy Engine v2.5</span>
+              <span className={`text-[8px] font-bold ${THEME.secondary} tracking-[0.4em] uppercase`}>Advanced Deploy Engine v3.1</span>
             </div>
           </div>
           
           <div className="hidden lg:flex items-center gap-12">
+            <div className="flex gap-8">
+              <button 
+                onClick={() => setActiveTab('monitor')}
+                className={`text-[9px] font-black uppercase tracking-widest ${activeTab === 'monitor' ? 'text-orange-600' : 'text-gray-500'} hover:text-orange-600 transition-colors`}
+              >
+                Monitor
+              </button>
+              <button 
+                onClick={() => setActiveTab('templates')}
+                className={`text-[9px] font-black uppercase tracking-widest ${activeTab === 'templates' ? 'text-orange-600' : 'text-gray-500'} hover:text-orange-600 transition-colors`}
+              >
+                Templates
+              </button>
+              <button 
+                onClick={() => setActiveTab('manage')}
+                className={`text-[9px] font-black uppercase tracking-widest ${activeTab === 'manage' ? 'text-orange-600' : 'text-gray-500'} hover:text-orange-600 transition-colors`}
+              >
+                Manage Nodes
+              </button>
+            </div>
+
             <div className="flex items-center gap-6">
               <div className="flex flex-col items-end">
                 <span className="text-[9px] font-bold text-gray-600 uppercase tracking-widest">Mesh Status</span>
                 <span className={`text-[10px] font-mono font-bold ${isOperational ? 'text-green-500' : 'text-red-500'}`}>
-                  {isOperational ? 'LINK_ACTIVE' : 'LINK_INTERRUPTED'}
+                   {hubStatus?.serverSpeed || '0ms'} / {isOperational ? 'LINK_OK' : 'OFFLINE'}
                 </span>
               </div>
               <div className={`h-10 w-[1px] bg-white/5`} />
               <div className="flex flex-col items-end">
-                <span className="text-[9px] font-bold text-gray-600 uppercase tracking-widest">Active Nodes</span>
-                <span className="text-[10px] font-mono font-bold text-orange-600 underline">#{hubStatus?.totalNodes || 0} DEPLOYED</span>
+                <span className="text-[9px] font-bold text-gray-600 uppercase tracking-widest">Global Users</span>
+                <span className="text-[10px] font-mono font-bold text-orange-600">#{hubStatus?.totalUsers || 0} LINKED</span>
               </div>
             </div>
             <a 
@@ -226,17 +292,17 @@ export default function App() {
                 <span className="text-[9px] text-gray-600 whitespace-nowrap">BUILD: {hubStatus?.engineVersion || '3.5.0-PRO'}</span>
               </div>
               
-              <div className="flex-1 space-y-6 overflow-hidden">
+              <div className="flex-1 space-y-3 overflow-y-auto max-h-[300px] pr-2 scrollbar-hide">
                 {[
                   { label: 'KERNEL_TASKS', val: 'MULTITHREADED_ASYNC', color: 'text-white' },
-                  { label: 'MESH_ID', val: 'SR-HUB-DEPLOY-7', color: 'text-white' },
-                  { label: 'NODE_IO', val: `${hubStatus?.totalNodes || 0} ACTIVE`, color: 'text-orange-600' },
-                  { label: 'USER_METRIC', val: `${hubStatus?.totalUsers || 0} LINKED`, color: 'text-orange-600' },
-                  { label: 'LATENCY_MS', val: '12.4ms', color: 'text-green-500' },
-                  { label: 'FIREWALL', val: 'ACTIVE', color: 'text-green-500' }
+                  { label: 'SERVER_LATENCY', val: hubStatus?.serverSpeed || '2.4ms', color: 'text-green-500' },
+                  { label: 'NODE_POOLS', val: `${hubStatus?.liveBots || 0} LIVE / ${hubStatus?.offlineBots || 0} OFF`, color: 'text-orange-600 font-bold' },
+                  { label: 'USER_METRICS', val: `${hubStatus?.totalUsers || 0} LINKED`, color: 'text-orange-600' },
+                  { label: 'CPU_LOAD', val: hubStatus?.loadAverage || '12.4%', color: 'text-green-500' },
+                  { label: 'MESH_ID', val: 'SR-HUB-DEPLOY-3.2', color: 'text-white' },
                 ].map((item, idx) => (
                   <div key={idx} className="flex justify-between items-center text-[10px] border-b border-white/[0.02] pb-2">
-                    <span className="text-gray-600 tracking-widest">{item.label}</span>
+                    <span className="text-gray-600 tracking-widest uppercase">{item.label}</span>
                     <span className={`${item.color} font-black underline italic truncate ml-4`}>{item.val}</span>
                   </div>
                 ))}
@@ -262,6 +328,89 @@ export default function App() {
           </div>
         </div>
       </section>
+
+      {/* Dynamic Content Sections */}
+      {activeTab === 'templates' && (
+        <section className="py-32 px-8 bg-[#020406]">
+          <div className="max-w-7xl mx-auto">
+            <header className="mb-20">
+              <h2 className="text-5xl font-black italic uppercase tracking-tighter mb-4">Template Marketplace</h2>
+              <p className="text-gray-500 max-w-xl">Choose from our pre-configured ready-made templates. Applying a template updates bot buttons and logic instantly.</p>
+            </header>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+              {templates.map(tpl => (
+                <div key={tpl.id} className={`p-8 border ${THEME.border} ${THEME.card} hover:border-orange-600 transition-all`}>
+                  <h3 className="text-xl font-bold mb-3 italic">{tpl.name}</h3>
+                  <p className="text-xs text-gray-500 leading-relaxed mb-6 h-12 overflow-hidden">{tpl.desc}</p>
+                  <div className="text-[10px] font-mono text-orange-600 font-bold mb-6">PROTO_ID: {tpl.id.toUpperCase()}</div>
+                  <button 
+                    onClick={() => { setActiveTab('manage'); }}
+                    className="w-full py-3 bg-white/5 border border-white/10 text-[10px] font-black uppercase tracking-widest hover:bg-orange-600 hover:text-black transition-all"
+                  >
+                    Select Node to Apply
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {activeTab === 'manage' && (
+        <section className="py-32 px-8 bg-[#020406]">
+          <div className="max-w-7xl mx-auto">
+            <header className="mb-20">
+              <h2 className="text-5xl font-black italic uppercase tracking-tighter mb-4">Node Force Control</h2>
+              <p className="text-gray-500 max-w-xl">Manage your deployed sub-bots directly from the web core.</p>
+            </header>
+            
+            <div className="grid grid-cols-1 gap-4">
+              {nodes.length === 0 ? (
+                <div className="p-20 text-center border-2 border-dashed border-white/5 text-gray-600 font-mono text-sm">
+                  NO ACTIVE NODES DETECTED IN MESH
+                </div>
+              ) : (
+                nodes.map(node => (
+                  <div key={node.id} className={`p-8 border ${THEME.border} ${THEME.card} flex flex-col lg:flex-row justify-between items-center gap-12`}>
+                    <div className="flex items-center gap-8">
+                      <div className={`w-12 h-12 ${node.status === 'LIVE' ? 'bg-green-500/20 text-green-500' : 'bg-red-500/20 text-red-500'} flex items-center justify-center border border-white/10`}>
+                        <Server className="w-6 h-6" />
+                      </div>
+                      <div>
+                        <div className="flex items-center gap-3">
+                          <h4 className="text-lg font-black italic">@{node.username}</h4>
+                          <span className={`text-[8px] px-2 py-0.5 rounded-full ${node.status === 'LIVE' ? 'bg-green-500/20 text-green-500' : 'bg-red-500/20 text-red-500'} font-bold`}>{node.status}</span>
+                        </div>
+                        <div className="text-[10px] font-mono text-gray-600 underline">NODE_ID: {node.id}</div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-col md:flex-row items-center gap-6">
+                      <div className="flex flex-col items-center md:items-end">
+                        <span className="text-[8px] font-bold text-gray-700 uppercase tracking-widest mb-1">Current Active Slot</span>
+                        <span className="text-[10px] font-black text-orange-600 bg-orange-600/10 px-4 py-1 italic uppercase border border-orange-600/20">{node.type}</span>
+                      </div>
+                      
+                      <div className="flex gap-3">
+                        <select 
+                          className="bg-black border border-white/10 text-[10px] font-black uppercase p-3 w-48 focus:border-orange-600 outline-none"
+                          onChange={(e) => switchTemplate(node.id, e.target.value)}
+                          defaultValue=""
+                        >
+                          <option value="" disabled>Change Template</option>
+                          {templates.map(t => (
+                            <option key={t.id} value={t.id}>{t.name}</option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </section>
+      )}
 
       {/* Grid: 01 to 08 - Specialized Style */}
       <section className="py-40 px-8 bg-[#030508] border-y border-white/[0.02]">

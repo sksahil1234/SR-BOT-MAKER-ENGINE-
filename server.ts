@@ -701,7 +701,9 @@ class BotEngine {
     setInterval(() => {
       this.nodes.forEach(async (node) => {
         try {
-          if (node.instance === "INVALID_TOKEN") return;
+          // Skip if it's a template node or has an invalid token
+          if (node.id.startsWith("BLUEPRINT_") || node.instance === "INVALID_TOKEN" as any) return;
+          
           if (!node.instance) {
             logSys(`[MONITOR] Node ${node.id} resetting...`);
             this.redeployInstance(node);
@@ -710,7 +712,7 @@ class BotEngine {
           logSys(`[MONITOR_ERR] Node ${node.id}: ${err.message}`);
         }
       });
-    }, 60000); 
+    }, 120000); 
   }
 
   private saveData() {
@@ -722,7 +724,7 @@ class BotEngine {
   }
 
   private async redeployInstance(node: BotNode) {
-    if (!node.token) return;
+    if (!node.token || (node.instance === "INVALID_TOKEN" as any)) return;
     try {
       const isDev = process.env.NODE_ENV !== 'production';
       const bot = new TelegramBot(node.token, { polling: isDev });
@@ -759,11 +761,12 @@ class BotEngine {
 
       logSys(`Node ${node.id} (@${me.username}) restarted.`);
     } catch (err: any) {
-      if (err.message.includes('401') || err.message.includes('404')) {
-        logSys(`[REDEPLOY_CANCEL] Node ${node.id} has invalid token: ${err.message}`);
+      const errMsg = String(err.message || err.description || "");
+      if (errMsg.includes('401') || errMsg.includes('404') || errMsg.includes('Unauthorized') || errMsg.includes('Not Found')) {
+        logSys(`[REDEPLOY_CANCEL] Node ${node.id} has invalid token: ${errMsg}`);
         node.instance = "INVALID_TOKEN" as any; // Persistent marker
       } else {
-        logSys(`[REDEPLOY_ERR] Node ${node.id}: ${err.message}`);
+        logSys(`[REDEPLOY_ERR] Node ${node.id}: ${errMsg}`);
       }
     }
   }
@@ -2369,23 +2372,32 @@ class BotEngine {
       let finalId = channelId.trim();
       
       if (finalId.includes('t.me/')) {
+        // Handle https://t.me/username
         const usernameMatch = finalId.match(/t\.me\/([a-zA-Z0-9_]{5,})/);
-        const joinMatch = finalId.match(/t\.me\/\+([a-zA-Z0-9_]+)/);
-        
-        if (usernameMatch && !finalId.includes('joinchat')) {
+        // Handle https://t.me/+InviteHash
+        const inviteMatch = finalId.match(/t\.me\/\+([a-zA-Z0-9_]+)/);
+        // Handle https://t.me/joinchat/InviteHash
+        const joinchatMatch = finalId.match(/t\.me\/joinchat\/([a-zA-Z0-9_-]+)/);
+
+        if (usernameMatch && !finalId.includes('joinchat') && !finalId.includes('+')) {
           finalId = '@' + usernameMatch[1];
-        } else if (joinMatch || finalId.includes('joinchat')) {
-          return true; // Bypass check for invite links
-        } else {
-          return true; // Unknown link, don't block
+        } else if (inviteMatch || joinchatMatch) {
+          // Can't check private invite links via standard getChatMember 
+          // unless bot is creator or has specific permissions. 
+          // For now, we allow it to avoid locking out users incorrectly.
+          logSys(`[CHECK_JOIN_BYPASS] Link detected (${finalId}), assuming joined.`);
+          return true; 
         }
       }
       
       const member = await bot.getChatMember(finalId, userId);
       return ['member', 'administrator', 'creator'].includes(member.status);
     } catch (err: any) {
-      logSys(`[CHECK_JOIN_FAIL] ${channelId}: Bot might not be admin there.`);
-      return true; // Error usually means bot is not admin, don't block user
+      // If bot is not in channel, getChatMember fails.
+      // We should probably NOT return true if we want to BE strict,
+      // but users often add IDs where the bot IS NOT admin yet.
+      logSys(`[CHECK_JOIN_INFO] ${channelId}: Bot might not be admin there or invalid ID.`);
+      return true; 
     }
   }
 
@@ -2396,9 +2408,10 @@ class BotEngine {
     if (clean.startsWith('@')) return `https://t.me/${clean.substring(1)}`;
     if (clean.startsWith('-100')) {
       const cleanId = clean.replace('-100', '');
-      return `https://t.me/c/${cleanId}/1`;
+      // If it's a numeric ID, it's a private supergroup link format
+      return `https://t.me/c/${cleanId}/999999999`;
     }
-    // Assume username without @
+    // Handle case where user provides username without @
     if (/^[a-zA-Z0-9_]{5,}$/.test(clean)) return `https://t.me/${clean}`;
     return `https://t.me/${clean}`;
   }
@@ -2413,10 +2426,15 @@ class BotEngine {
     const isHub = state.nodeId === "HUB_NODE";
 
     if (action === "HUB_ADD_CHANNEL") {
-      (this as any).hubForceJoinChannels.push(text);
+      let clean = text.trim();
+      if (clean.includes("t.me/+") || clean.includes("joinchat")) {
+        // Invite link - we suggest using username for better checking, but allow it
+        bot.sendMessage(userId, "⚠️ **Notice:** Checking membership for private invite links is limited. Usernames (@channel) or Public Links are recommended for 100% accuracy.");
+      }
+      (this as any).hubForceJoinChannels.push(clean);
       await (this as any).saveHubConfig();
       this.fsmStates.delete(userId);
-      return bot.sendMessage(userId, "✅ Channel added to Hub Must-Join list.");
+      return bot.sendMessage(userId, `✅ **Channel added!**\n\nDirect Link for users will be: ${this.formatChannelLink(clean)}`, { disable_web_page_preview: true });
     }
 
     if (action === "BC_CENTER_MEDIA") {
@@ -3308,7 +3326,7 @@ const USER_HUB_KB = {
     keyboard: [
       [{ text: "➕ Create New Bot" }, { text: "🤖 My All Bot Nodes" }],
       [{ text: "📢 Broadcast all user" }, { text: "📊 Hub Stats" }],
-      [{ text: "📡 Verify Channels" }, { text: "📞 Support Hub" }]
+      [{ text: "📞 Support Hub" }]
     ],
     resize_keyboard: true
   }
@@ -3620,16 +3638,16 @@ async function startServer() {
           return;
         }
 
-        if (text === "📡 Verify Channels") {
-           const joinedStatuses = await Promise.all(engine.getHubForceJoinChannels().map((ch: string) => (engine as any).checkForceJoin(hubBot, ch, chatId)));
-           if (joinedStatuses.includes(false)) {
-              return (engine as any).sendHubJoinForce(hubBot, chatId);
-           } else {
-              return hubBot.sendMessage(chatId, "✅ **All required channels joined!** You have full access to the bot maker.");
-           }
-        }
-
         if (text.startsWith("/start")) {
+          // CHECK FORCE JOIN FIRST
+          const channels = engine.getHubForceJoinChannels();
+          if (channels && channels.length > 0) {
+            const joinedStatuses = await Promise.all(channels.map((ch: string) => (engine as any).checkForceJoin(hubBot, ch, chatId)));
+            if (joinedStatuses.includes(false)) {
+              return (engine as any).sendHubJoinForce(hubBot, chatId);
+            }
+          }
+
           const user_tag = msg.from.username ? `@${msg.from.username}` : (msg.from.first_name || "User");
           
           const welcomeMsg = `WELCOME , ${user_tag}!  SELECT  YOUR BOT TYPE 👇🏻 \n\n` +
@@ -3974,10 +3992,11 @@ async function startServer() {
         const channels = engine.getHubForceJoinChannels() || [];
         const joinedStatuses = await Promise.all(channels.map((ch: string) => (engine as any).checkForceJoin(hubBot, ch, userId)));
         if (joinedStatuses.includes(false)) {
-           return hubBot.answerCallbackQuery(query.id, { text: "❌ You have not joined all channels!", show_alert: true });
+           return hubBot.answerCallbackQuery(query.id, { text: "❌ You have not joined all required channels yet!", show_alert: true });
         }
-        hubBot.answerCallbackQuery(query.id, { text: "✅ Access Granted!" });
-        return hubBot.sendMessage(chatId, "✅ **Verification successful!** Type /start to begin.");
+        hubBot.answerCallbackQuery(query.id);
+        hubBot.deleteMessage(chatId, query.message?.message_id).catch(() => {});
+        return hubBot.sendMessage(chatId, "✅ **Verification successful!** You now have full access to SR HUB.", USER_HUB_KB);
       }
 
       if (currentHubState?.action === "HUB_MANAGE_SUBBOT" || currentHubState?.action === "HUB_MANAGE_BLUEPRINT") {

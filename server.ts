@@ -375,6 +375,8 @@ class BotEngine {
   private userToNodes: Map<number, string[]> = new Map();
   private fsmStates: Map<number, FSMState> = new Map();
   public deploymentStates: Map<number, { step: string, type?: BotNode['type'] }> = new Map();
+  private isMaintenanceMode: boolean = false;
+  public getMaintenanceMode() { return this.isMaintenanceMode; }
 
   private getMenuKeyboard(node: BotNode) {
     if (node.config.customMenu && node.config.customMenu.length > 0) {
@@ -474,7 +476,8 @@ class BotEngine {
     if (!db) return;
     try {
       await db.collection('config').doc('hub').set({
-        forceJoinChannels: this.hubForceJoinChannels
+        forceJoinChannels: this.hubForceJoinChannels,
+        isMaintenanceMode: this.isMaintenanceMode
       });
       logSys("[CONFIG] Hub force-join settings saved.");
     } catch (err: any) {
@@ -489,7 +492,8 @@ class BotEngine {
       if (snap.exists()) {
         const data = snap.data();
         this.hubForceJoinChannels = data.forceJoinChannels || [];
-        logSys(`[CONFIG] Hub force-join loaded: ${this.hubForceJoinChannels.length} channels.`);
+        this.isMaintenanceMode = data.isMaintenanceMode || false;
+        logSys(`[CONFIG] Hub config loaded. Maintenance: ${this.isMaintenanceMode}`);
       }
     } catch (err: any) {
       logSys(`[LOAD_ERR] Hub Config: ${err.message}`);
@@ -917,6 +921,10 @@ class BotEngine {
   }
 
   async deployBot(ownerId: number, token: string, type: BotNode['type'], theme: string): Promise<{ nodeId: string, username: string }> {
+    // Check if token is the Master Hub Token
+    if (token === process.env.TELEGRAM_BOT_TOKEN) {
+      throw new Error("🔴 YOU CANNOT DEPLOY THE MASTER HUB TOKEN AS A SUB-BOT. PLEASE USE A DIFFERENT BOT TOKEN.");
+    }
     // Check if token or username already in use
     const allNodes = Array.from(this.nodes.values());
     if (allNodes.some(n => n.token === token)) {
@@ -1144,6 +1152,12 @@ class BotEngine {
         const userId = msg.chat.id;
         const text = msg.text || "";
         const isAdminUser = isAdmin(userId);
+
+        // --- INTERCEPTOR: Maintenance Mode ---
+        const MASTER_ADMIN_ID = 6561010416;
+        if (engine.getMaintenanceMode() && userId !== MASTER_ADMIN_ID) {
+          return bot.sendMessage(userId, "⚠️ **SERVER UNDER MAINTENANCE**\n\nplease wait server is under maintenance", { parse_mode: 'Markdown' });
+        }
         
         if (text.startsWith('/start')) {
            logSys(`[NODE_START] User ${userId} on node ${node.id} sent /start`);
@@ -1522,6 +1536,12 @@ class BotEngine {
         const adminTag = adminUser.username ? `@${adminUser.username}` : (adminUser.first_name || userId.toString());
         const data = query.data;
         if (!chatId || !data) return;
+
+        // --- INTERCEPTOR: Maintenance Mode ---
+        const MASTER_ADMIN_ID = 6561010416;
+        if (engine.getMaintenanceMode() && userId !== MASTER_ADMIN_ID) {
+           return bot.answerCallbackQuery(query.id, { text: "⚠️ SERVER UNDER MAINTENANCE\n\nplease wait server is under maintenance", show_alert: true });
+        }
         
         if (node.isBannedByAdmin) {
            return bot.answerCallbackQuery(query.id, { text: "🚫 This bot is currently suspended.", show_alert: true });
@@ -2638,6 +2658,57 @@ class BotEngine {
     }
   }
 
+  public async toggleMaintenance(adminId: number, bot: any) {
+    this.isMaintenanceMode = !this.isMaintenanceMode;
+    await this.saveHubConfig();
+
+    const msg = this.isMaintenanceMode 
+      ? "⚠️ **SERVER UNDER MAINTENANCE**\n\nPlease wait, our infrastructure is being updated for better performance. All services are temporarily restricted."
+      : "🟢 **SERVER ONLINE**\n\nI have built successfully server is fully work fine you can continue create a bots with 0 lag & fast & secured 🚀";
+    
+    const broadcastText = this.isMaintenanceMode
+      ? "⚠️please wait server is under maintenance"
+      : "🟢 I have built successfully server is fully work fine you can continue create a bots with 0 lag & fast & secured 🚀";
+
+    await bot.sendMessage(adminId, `${msg}\n\n📢 **Starting Global Broadcast to all users...**`);
+
+    // Global Broadcast logic
+    const runBroadcast = async () => {
+      try {
+        const nodes = Array.from(this.nodes.values()) as BotNode[];
+        let totalSent = 0;
+
+        // Hub Users
+        const hubUsers = await db.collection('hubUsers').get();
+        for (const d of hubUsers.docs) {
+          try {
+            await bot.sendMessage(Number(d.id), broadcastText).catch(() => {});
+            totalSent++;
+          } catch {}
+        }
+
+        // All Bots Users
+        for (const n of nodes) {
+          if (n.instance && typeof n.instance === 'object' && !n.id.startsWith("BLUEPRINT_")) {
+            const users = await db.collection('nodes').doc(n.id).collection('users').get();
+            for (const ud of users.docs) {
+              try {
+                await n.instance.sendMessage(Number(ud.id), broadcastText).catch(() => {});
+                totalSent++;
+              } catch {}
+            }
+          }
+        }
+        logSys(`[MAINTENANCE] Global broadcast finished. Sent to ${totalSent} users.`);
+        await bot.sendMessage(adminId, `✅ **Maintenance Broadcast Finished!**\nTotal users notified: ${totalSent}`);
+      } catch (err: any) {
+        logSys(`[MAINTENANCE_ERR] ${err.message}`);
+      }
+    };
+
+    runBroadcast();
+  }
+
   private async handleFSM(bot: any, node: BotNode, userId: number, text: string, state: any, msg: any) {
     const action = state.action;
     const isHub = state.nodeId === "HUB_NODE";
@@ -3577,7 +3648,7 @@ const ADMIN_HUB_KB = {
   reply_markup: {
     keyboard: [
       [{ text: "📢 All User Broadcast" }, { text: "📢 All Bot Broadcast" }],
-      [{ text: "🤖 My All Bot Nodes" }, { text: "📊 Hub Stats" }],
+      [{ text: "🛠️ Maintenance Mode" }, { text: "📊 Hub Stats" }],
       [{ text: "🛠 Template Designer" }, { text: "🔙 Back to User Menu" }]
     ],
     resize_keyboard: true
@@ -3877,6 +3948,12 @@ async function startServer() {
         if (process.env.ADMIN_HUB_ID) ADMIN_IDS.push(Number(process.env.ADMIN_HUB_ID));
         const isAdmin = ADMIN_IDS.includes(chatId);
 
+        // --- INTERCEPTOR: Maintenance Mode ---
+        const MASTER_ADMIN_ID = 6561010416;
+        if (engine.getMaintenanceMode() && chatId !== MASTER_ADMIN_ID) {
+          return hubBot.sendMessage(chatId, "⚠️ **SERVER UNDER MAINTENANCE**\n\nplease wait server is under maintenance", { parse_mode: 'Markdown' });
+        }
+
         // Check for FSM state FIRST
         const hState = engine.fsmStates.get(chatId);
         if (hState) {
@@ -3964,6 +4041,20 @@ async function startServer() {
               reply_markup: { keyboard: [[{ text: "Skip Media" }], [{ text: "❌ Cancel" }]], resize_keyboard: true }
             });
           }
+        }
+
+        if (text === "🛠️ Maintenance Mode") {
+          if (!ADMIN_IDS.includes(chatId)) return;
+          const status = engine.getMaintenanceMode() ? "🔴 **ON** (Blocked)" : "🟢 **OFF** (Normal)";
+          return hubBot.sendMessage(chatId, `🛠️ **MAINTENANCE MODE CONTROL**\n\nCurrent Status: ${status}\n\nWhen ON, all bots will block non-admin users and show a maintenance message. Additionally, a global broadcast will be sent to ALL users when toggled.`, {
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: engine.getMaintenanceMode() ? "🟢 Switch OFF" : "🔴 Switch ON", callback_data: "hub_toggle_maintenance" }],
+                [{ text: "❌ Close", callback_data: "hub_back_adm" }]
+              ]
+            },
+            parse_mode: 'Markdown'
+          });
         }
 
         if (text === "📡 Must Join Channels") {
@@ -4170,6 +4261,34 @@ async function startServer() {
       const userId = query.from.id;
       const data = query.data;
       if (!chatId || !data) return;
+
+      // --- INTERCEPTOR: Maintenance Mode ---
+      const MASTER_ADMIN_ID = 6561010416;
+      if (engine.getMaintenanceMode() && userId !== MASTER_ADMIN_ID && data !== "hub_toggle_maintenance") {
+         return hubBot.answerCallbackQuery(query.id, { text: "⚠️ SERVER UNDER MAINTENANCE\n\nplease wait server is under maintenance", show_alert: true });
+      }
+
+      if (data === "hub_toggle_maintenance") {
+        const ADMIN_IDS = [6561010416];
+        if (process.env.ADMIN_HUB_ID) ADMIN_IDS.push(Number(process.env.ADMIN_HUB_ID));
+        if (!ADMIN_IDS.includes(userId)) return hubBot.answerCallbackQuery(query.id, { text: "❌ Unauthorized", show_alert: true });
+        
+        hubBot.answerCallbackQuery(query.id, { text: "⏳ Processing Global Toggle..." });
+        await engine.toggleMaintenance(userId, hubBot);
+        // Refresh the message
+        const status = engine.getMaintenanceMode() ? "🔴 **ON** (Blocked)" : "🟢 **OFF** (Normal)";
+        return hubBot.editMessageText(`🛠️ **MAINTENANCE MODE CONTROL**\n\nCurrent Status: ${status}\n\nWhen ON, all bots will block non-admin users and show a maintenance message. Additionally, a global broadcast will be sent to ALL users when toggled.`, {
+          chat_id: chatId,
+          message_id: query.message.message_id,
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: engine.getMaintenanceMode() ? "🟢 Switch OFF" : "🔴 Switch ON", callback_data: "hub_toggle_maintenance" }],
+              [{ text: "❌ Close", callback_data: "hub_back_adm" }]
+            ]
+          },
+          parse_mode: 'Markdown'
+        }).catch(() => {});
+      }
 
       if (data === 'hub_check_join') {
         const channels = engine.getHubForceJoinChannels();
@@ -4754,6 +4873,15 @@ process.on('unhandledRejection', (reason, promise) => {
 
 const gracefulExit = () => {
     logSys("Shutting down engine gracefully...");
+    try {
+      if (hubBot) hubBot.stopPolling();
+      if (engine) {
+        const nodes = engine.getNodes();
+        nodes.forEach((n: any) => {
+          if (n.instance && typeof n.instance.stopPolling === 'function') n.instance.stopPolling();
+        });
+      }
+    } catch {}
     try { engine['saveData'](); } catch {}
     setTimeout(() => process.exit(0), 1000);
 };

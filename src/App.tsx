@@ -154,20 +154,41 @@ function MainDashboard() {
   }, []);
 
   if (initialSync) {
+    const isTokenMissing = !hubStatus?.hubActive && !hubStatus?.hubTokenDefined;
+    
     return (
       <div className={`min-h-screen ${THEME.bg} flex flex-col items-center justify-center font-mono p-4`}>
         <div className="relative">
-          <Terminal className={`w-16 h-16 ${THEME.accent} animate-pulse`} />
-          <div className="absolute inset-0 border-2 border-orange-600/20 rounded-full scale-150 animate-ping" />
+          <Terminal className={`w-16 h-16 ${isTokenMissing ? 'text-red-600' : THEME.accent} animate-pulse`} />
+          <div className={`absolute inset-0 border-2 ${isTokenMissing ? 'border-red-600/20' : 'border-orange-600/20'} rounded-full scale-150 animate-ping`} />
         </div>
-        <span className="mt-12 text-[10px] tracking-[0.8em] text-gray-500 uppercase animate-pulse text-center">Establishing Secure Uplink</span>
         
-        <button 
-          onClick={() => setInitialSync(false)}
-          className="mt-8 text-[9px] text-gray-700 uppercase tracking-widest hover:text-orange-600 transition-colors"
-        >
-          [ Bypass Synchronization ]
-        </button>
+        {isTokenMissing ? (
+          <div className="mt-12 flex flex-col items-center text-center space-y-4">
+             <span className="text-red-500 font-bold tracking-[0.2em] uppercase">CRITICAL: ENGINE TOKEN MISSING</span>
+             <p className="text-[10px] text-gray-500 max-w-xs leading-relaxed uppercase tracking-widest">
+               The Master Bot Token is not detected in your environment. Please add <code className="text-orange-600 bg-orange-600/10 px-1">TELEGRAM_BOT_TOKEN</code> to your AI Studio settings.
+             </p>
+             <div className="pt-8">
+               <button 
+                 onClick={() => setInitialSync(false)}
+                 className="px-8 py-3 bg-red-600/20 border border-red-600 text-red-600 text-[10px] font-black uppercase tracking-widest hover:bg-red-600 hover:text-black transition-all"
+               >
+                 [ Bypass To Web Portal ]
+               </button>
+             </div>
+          </div>
+        ) : (
+          <>
+            <span className="mt-12 text-[10px] tracking-[0.8em] text-gray-500 uppercase animate-pulse text-center">Establishing Secure Uplink</span>
+            <button 
+              onClick={() => setInitialSync(false)}
+              className="mt-8 text-[9px] text-gray-700 uppercase tracking-widest hover:text-orange-600 transition-colors"
+            >
+              [ Bypass Synchronization ]
+            </button>
+          </>
+        )}
       </div>
     );
   }

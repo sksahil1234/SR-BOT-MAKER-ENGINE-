@@ -282,6 +282,7 @@ interface SubBotConfig {
   bannedWallets: Set<string>;
   botOffText: string;
   withdrawOffText: string;
+  buildInfoText?: string;
   payoutUrl?: string; // This is the API URL for automated payments
   payoutGatewayApiUrl?: string; // API URL for external manual/auto calls
   payoutAppUrl?: string;
@@ -319,6 +320,7 @@ interface BotNode {
   type: 'autopay' | 'upi' | 'crypto' | 'star' | 'task' | 'bet' | 'redeem' | 'giveaway' | 'refer_auto' | 'wallet' | 'file' | 'poll' | 'refer_manual' | 'upi_manual';
   theme: string;
   createdAt: number;
+  isBannedByAdmin?: boolean;
   config: SubBotConfig;
   users: Map<number, UserProfile>;
   pendingWithdrawals: Map<string, { userId: number, amount: number, wallet: string, createdAt: number }>;
@@ -374,9 +376,9 @@ class BotEngine {
     
     // Rows 1 & 2: Primary Actions
     if (node.type === 'refer_manual') {
-      kb.push([{ text: "Balance" }, { text: "Refer Earn" }]);
-      kb.push([{ text: "Bonus" }, { text: "Withdraw" }]);
-      kb.push([{ text: "Wallet" }]);
+      kb.push([{ text: "💰 Balance" }, { text: "👥 Refer & Earn" }]);
+      kb.push([{ text: "🎁 Bonus" }, { text: "💸 Withdraw" }]);
+      kb.push([{ text: "🏦 Wallet" }]);
     } else if (node.type === 'upi_manual') {
       kb.push([{ text: "💰 Balance" }, { text: "👥 Refer & Earn" }]);
       kb.push([{ text: "🎁 Bonus" }, { text: "💸 Withdraw" }]);
@@ -388,19 +390,19 @@ class BotEngine {
     
     // Row 3: Template Specific Features
     if (node.type === 'bet') {
-      kb.push([{ text: "🎯 Play Bet" }, { text: "🏆 Leaderboard" }]);
+      kb.push([{ text: "🎯 Play Bet" }]);
     } else if (node.type === 'task') {
-      kb.push([{ text: "📋 Tasks" }, { text: "🏆 Leaderboard" }]);
+      kb.push([{ text: "📋 Tasks" }]);
     } else if (node.type === 'redeem') {
-      kb.push([{ text: "🏆 Leaderboard" }]);
+      // nothing extra
     } else if (node.type === 'file') {
-      kb.push([{ text: "📁 File Store" }, { text: "🏆 Leaderboard" }]);
+      kb.push([{ text: "📁 File Store" }]);
     } else if (node.type === 'poll') {
-      kb.push([{ text: "📊 Create Poll" }, { text: "🏆 Leaderboard" }]);
+      kb.push([{ text: "📊 Create Poll" }]);
     } else if (node.type === 'refer_manual' || node.type === 'upi_manual') {
       // already added above
     } else {
-      kb.push([{ text: "🏆 Leaderboard" }]);
+      // nothing extra
     }
 
     // Row 4: Utility
@@ -443,8 +445,64 @@ class BotEngine {
     }
   }
 
+  private hubForceJoinChannels: string[] = [];
+  public getHubForceJoinChannels() { return this.hubForceJoinChannels; }
+
+  private async saveHubConfig() {
+    if (!db) return;
+    try {
+      await db.collection('config').doc('hub').set({
+        forceJoinChannels: this.hubForceJoinChannels
+      });
+      logSys("[CONFIG] Hub force-join settings saved.");
+    } catch (err: any) {
+      logSys(`[SAVE_ERR] Hub Config: ${err.message}`);
+    }
+  }
+
+  private async loadHubConfig() {
+    if (!db) return;
+    try {
+      const snap = await db.collection('config').doc('hub').get();
+      if (snap.exists()) {
+        const data = snap.data();
+        this.hubForceJoinChannels = data.forceJoinChannels || [];
+        logSys(`[CONFIG] Hub force-join loaded: ${this.hubForceJoinChannels.length} channels.`);
+      }
+    } catch (err: any) {
+      logSys(`[LOAD_ERR] Hub Config: ${err.message}`);
+    }
+  }
+
+  private async sendHubJoinForce(bot: any, userId: number, messageId?: number) {
+    const buttons = [];
+    const chList = [...(this.hubForceJoinChannels || [])];
+    for (let i = 0; i < chList.length; i += 2) {
+       const row = [];
+       const ch1 = chList[i];
+       const url1 = ch1.startsWith('http') ? ch1 : (ch1.startsWith('@') ? `https://t.me/${ch1.substring(1)}` : `https://t.me/c/${ch1.replace('-100', '')}/999999999`);
+       row.push({ text: `➕ Join`, url: url1 });
+
+       if (i + 1 < chList.length) {
+          const ch2 = chList[i + 1];
+          const url2 = ch2.startsWith('http') ? ch2 : (ch2.startsWith('@') ? `https://t.me/${ch2.substring(1)}` : `https://t.me/c/${ch2.replace('-100', '')}/999999999`);
+          row.push({ text: `➕ Join`, url: url2 });
+       }
+       buttons.push(row);
+    }
+    buttons.push([{ text: "🔥 Claim", callback_data: `hub_check_join` }]);
+
+    const header = `👋 <b>WELCOME TO OUR HUB!</b>\n\n🛑 <b>Must Join These Channels To Use Our Builder</b>\n\n🎯 <b>After Joining Click Claim Button</b>`;
+    if (messageId) {
+      return bot.editMessageText(header, { chat_id: userId, message_id: messageId, reply_markup: { inline_keyboard: buttons }, parse_mode: 'HTML' }).catch(() => {});
+    } else {
+      return bot.sendMessage(userId, header, { reply_markup: { inline_keyboard: buttons }, parse_mode: 'HTML' }).catch(() => {});
+    }
+  }
+
   constructor() {
     logSys("BotEngine object created. Awaiting boot sequence...");
+    this.loadHubConfig();
     this.startResilienceMonitor();
     this.startFirestoreHeartbeat();
     this.setupProcessHandlers();
@@ -505,6 +563,7 @@ class BotEngine {
         const node: BotNode = {
           ...data,
           id: nodeDoc.id,
+          isBannedByAdmin: data.isBannedByAdmin ?? false,
           config: {
             referBonus: safeConfig.referBonus ?? 5,
             dailyBonus: safeConfig.dailyBonus ?? 1,
@@ -568,21 +627,14 @@ class BotEngine {
     if (node.users.has(userId)) return node.users.get(userId)!;
     
     try {
-      if (!db) {
-        logSys(`[DB_OFFLINE] Cannot load user ${userId} for node ${node.id}`);
-        return null;
-      }
-      const uDoc = await db.collection('nodes').doc(node.id).collection('users').doc(String(userId)).get().catch((e: any) => {
-        logSys(`[FIRESTORE_GET_ERR] Node ${node.id} User ${userId}: ${e.message}`);
-        throw e;
-      });
+      if (!db) return null;
+      const uDoc = await db.collection('nodes').doc(node.id).collection('users').doc(String(userId)).get();
       if (uDoc.exists) {
         const profile = uDoc.data() as UserProfile;
         node.users.set(userId, profile);
         return profile;
       }
       
-      // Auto-register new users
       const newUser: UserProfile = {
         balance: 0,
         referrals: 0,
@@ -619,6 +671,7 @@ class BotEngine {
         type: node.type,
         theme: node.theme,
         createdAt: node.createdAt,
+        isBannedByAdmin: node.isBannedByAdmin ?? false,
         config: configObj,
         pendingWithdrawals: Object.fromEntries(node.pendingWithdrawals)
       };
@@ -709,10 +762,15 @@ class BotEngine {
       }
 
       // Professional Branding
-      const builder = hubInfo?.username ? `@${hubInfo.username}` : "@SR_TECHNOLOGY_LTD1";
-      const botDesc = `👋 REGISTER THIS PAYMENT GATEWAY APP AND GET YOUR WALLET ID FOR WITHDRAWAL YOUR AMOUNT 💸\n\n👉🏻 REGISTER AND GET WALLET ID🖇️ https://srwallet.vercel.app/ 💸\n\n🚀 BUILDER = ${builder}`;
-      bot.setMyDescription({ description: botDesc }).catch(() => {});
+      const builder = "@srbotmakerbot";
+      const botText = `👋WELCOME TO OUR ${me.first_name} ok KEEP REFER & MONEY💸\n\n👉🏻REGISTER OUR OFFICIAL GATEWAY🖇️https://srwallet.vercel.app/\n\n🚀 BUILDER = ${builder}`;
+      bot.setMyDescription({ description: botText }).catch(() => {});
       bot.setMyShortDescription({ short_description: "Industrial grade auto-payout engine." }).catch(() => {});
+
+      bot.setMyCommands([
+        { command: 'start', description: "Let's Start The Advantage Of Earning" },
+        { command: 'build', description: "About Our Builder" }
+      ]).catch(() => {});
 
       logSys(`Node ${node.id} (@${me.username}) auto-restarted successfully.`);
     } catch (err: any) {
@@ -760,8 +818,9 @@ class BotEngine {
       adminLogs: [],
       bannedUsers: new Set(),
       bannedWallets: new Set(),
-      botOffText: "⚠️ Bot is currently under maintenance.",
-      withdrawOffText: "⚠️ Withdrawals are currently closed.",
+      botOffText: "🔴BOT OVER SEE YOU SOON",
+      withdrawOffText: "🔴 withdrawal off",
+      buildInfoText: "🛠️ **Built by @srbotmakerbot 🇮🇳**",
       payoutUrl: "",
       payoutGatewayApiUrl: "",
       payoutAppUrl: "",
@@ -844,9 +903,9 @@ class BotEngine {
       }
 
       // Professional Branding
-      const builder = hubInfo?.username ? `@${hubInfo.username}` : "@SR_TECHNOLOGY_LTD1";
-      const botDesc = `👋 REGISTER THIS PAYMENT GATEWAY APP AND GET YOUR WALLET ID FOR WITHDRAWAL YOUR AMOUNT 💸\n\n👉🏻 REGISTER AND GET WALLET ID🖇️ https://srwallet.vercel.app/ 💸\n\n🚀 BUILDER = ${builder}`;
-      instance.setMyDescription({ description: botDesc }).catch(() => {});
+      const builder = "@srbotmakerbot";
+      const botText = `👋WELCOME TO OUR ${botUsername} ok KEEP REFER & MONEY💸\n\n👉🏻REGISTER OUR OFFICIAL GATEWAY🖇️https://srwallet.vercel.app/\n\n🚀 BUILDER = ${builder}`;
+      instance.setMyDescription({ description: botText }).catch(() => {});
       instance.setMyShortDescription({ short_description: "Industrial grade auto-payout engine." }).catch(() => {});
       
       this.nodes.set(nodeId, newNode);
@@ -864,15 +923,14 @@ class BotEngine {
   }
 
   private sendUserDashboard(bot: any, node: BotNode, userId: number) {
-    const welcomeHeader = node.config.customDashboardText || "REGISTER THIS PAYMENT GATEWAY APP AND GET YOUR WALLET ID FOR WITHDRAWAL YOUR AMOUNT 💸";
+    const builder = "@srbotmakerbot";
     const appUrl = "https://srwallet.vercel.app/"; 
-    const builder = hubInfo?.username ? `@${hubInfo.username}` : "@SR_TECHNOLOGY_LTD1";
     
     let welcomeMsg = "";
     if (node.config.customDashboardText) {
       welcomeMsg = node.config.customDashboardText;
     } else {
-      welcomeMsg = `👋 <b>${welcomeHeader}</b>\n\n👉🏻 REGISTER AND GET WALLET ID🖇️ ${appUrl}💸\n\n🚀 BUILDER = ${builder}`;
+      welcomeMsg = `👋WELCOME TO OUR @${node.username} ok KEEP REFER & MONEY💸\n\n👉🏻REGISTER OUR OFFICIAL GATEWAY🖇️ ${appUrl}\n\n🚀 BUILDER = ${builder}`;
     }
 
     const gatewayName = node.config.payoutGatewayName || "SR WALLET";
@@ -882,7 +940,7 @@ class BotEngine {
     const opts: any = {
       reply_markup: {
         inline_keyboard: [
-          [{ text: `${gatewayName} | : APP URL RAHEGA`, url: gatewayUrl }]
+          [{ text: "TAP TO OPEN GATEWAY NOW", url: gatewayUrl }]
         ]
       },
       parse_mode: 'HTML'
@@ -970,10 +1028,20 @@ class BotEngine {
           { text: "Statistics", callback_data: "adm_view_stats" },
           { text: "Action Logs", callback_data: "adm_view_logs" }
         ],
+        [
+           { text: "Edit Bot Off Msg", callback_data: "adm_set_botOffText" },
+           { text: "Edit Build Info", callback_data: "adm_set_buildInfo" }
+        ],
         [{ text: "💳 Reset All Balances", callback_data: "adm_ask_reset" }],
         [{ text: "🔄 Change Bot Template", callback_data: "adm_tpl_manage" }]
       ]
     };
+
+    const ADMIN_IDS = [6561010416];
+    if (process.env.ADMIN_HUB_ID) ADMIN_IDS.push(Number(process.env.ADMIN_HUB_ID));
+    if (ADMIN_IDS.includes(chatId)) {
+        keyboard.inline_keyboard.push([{ text: node.isBannedByAdmin ? "🛡️ UNBAN FROM HUB" : "🚫 BAN FROM HUB", callback_data: `adm_hub_ban_tgl_${node.id}` }]);
+    }
 
     if (messageId) {
       return bot.editMessageText(panelText, { 
@@ -1013,14 +1081,28 @@ class BotEngine {
         return this.sendAdminPanel(bot, node, userId);
       }
 
+      // --- INTERCEPTOR: Node Ban Check ---
+      if (node.isBannedByAdmin && !isAdminUser) {
+        const restrictedText = `🚫 **𝙔𝙊𝙐𝙍 𝘽𝙊𝙏 𝙄𝙎 𝘽𝘼𝙉𝙉𝙀𝘿 𝙁𝙍𝙊𝙈 𝙎𝙍 𝘽𝙊𝙏 𝙈𝘼𝙆𝙀𝙍 𝘼𝘿𝙈𝙄𝙉** 🚫\n\n` +
+                             `⚠️ 𝙋𝙇𝙀𝘼𝙎𝙀 𝘾𝙊𝙉𝙏𝘼𝘾𝙏 𝘼𝘿𝙈𝙄𝙉 𝙄𝙈𝙈𝙀𝘿𝙄𝘼𝙏𝙀𝙇𝙔\n\n` +
+                             `📢 **Admin Handle:** @SR_TECNOLOGY_LTD 🇮🇳`;
+        return bot.sendMessage(userId, restrictedText, { parse_mode: 'Markdown' });
+      }
+
       // --- INTERCEPTOR: Ban Check ---
       if (!isAdminUser && node.config.bannedUsers.has(userId)) {
         return bot.sendMessage(userId, "⛔️ *ACCESS DENIED*\nYour account is permanently restricted.", { parse_mode: 'Markdown' });
       }
 
+      if (text === "/build") {
+        const buildInfo = node.config.buildInfoText || "🛠️ **Built by @srbotmakerbot 🇮🇳**";
+        return bot.sendMessage(userId, buildInfo, { parse_mode: 'Markdown' });
+      }
+
       // --- INTERCEPTOR: Bot Maintenance ---
       if (!isAdminUser && !node.config.botStatus) {
-        return bot.sendMessage(userId, "🔴 **BOTH FOUND OVER SEE YOU SOON**", {
+        const offText = node.config.botOffText || `🔴 @${node.username} OVER SEE YOU SOON`;
+        return bot.sendMessage(userId, offText, {
           reply_markup: { remove_keyboard: true }
         });
       }
@@ -1030,6 +1112,14 @@ class BotEngine {
 
         if (text === "/myid") {
           return bot.sendMessage(userId, `👤 *YOUR TELEGRAM ID:* \`${userId}\``, { parse_mode: 'Markdown' });
+        }
+
+        if (text === "/verify_setup" && isAdminUser) {
+           const dvStatus = node.config.deviceVerification ? "🟢 ENABLED" : "🔴 DISABLED";
+           const kb = {
+             inline_keyboard: [[{ text: `TGL Device Verify: ${dvStatus}`, callback_data: "adm_tgl_dv" }]]
+           };
+           return bot.sendMessage(userId, "🛡 **ANTI-BOT SYSTEM CONFIG**\n\nDevice Verification ensures no multiple accounts join via same device.", { reply_markup: kb });
         }
 
         if (text === "/adminhelp1" && isAdminUser) {
@@ -1080,10 +1170,30 @@ class BotEngine {
         if (text.startsWith('/start')) {
           logSys(`[NODE_START] User ${userId} on node ${node.id} sent /start`);
           this.fsmStates.delete(userId);
-          const user = await this.ensureUserLoaded(node, userId);
           const parts = text.split(' ');
           const refIdStr = parts.length > 1 ? parts[1] : null;
           const refId = refIdStr ? parseInt(refIdStr) : null;
+
+          // Check if user is truly new to this bot
+          let isNewUser = !node.users.has(userId);
+          if (isNewUser && db) {
+            const uDoc = await db.collection('nodes').doc(node.id).collection('users').doc(String(userId)).get();
+            isNewUser = !uDoc.exists;
+          }
+
+          const user = await this.ensureUserLoaded(node, userId);
+
+          if (isNewUser && user && refId && refId !== userId) {
+            const referrer = await this.ensureUserLoaded(node, refId);
+            if (referrer) {
+              referrer.balance += node.config.referBonus;
+              referrer.referrals += 1;
+              await this.saveUserToFirestore(node.id, refId, referrer);
+              bot.sendMessage(refId, `🎁 **REFERRAL REWARD!**\n\nA new user joined via your link.\n💰 You earned: ₹${node.config.referBonus}\n📈 Total Referrals: ${referrer.referrals}`).catch(() => {});
+              this.logAdminAction(node, `Referral rewarded: ${refId} from ${userId}`);
+            }
+          }
+
 
           // 1. Force Join Check
           const hasChecked = node.config.forceJoinChannels && node.config.forceJoinChannels.length > 0;
@@ -1143,7 +1253,10 @@ class BotEngine {
 
               buttons.push([{ text: "🔥 Claim", callback_data: `check_join_${refId || 'none'}` }]);
               
-              return bot.sendMessage(userId, "👋 <b>Hey There User Welcome To Bot!</b>\n\n🛑 <b>Must Join Total Channel To Use Our Bot</b>\n\n🎯 <b>After Joining Click Claim Button</b>", {
+              const me = await bot.getMe();
+              const welcomeSub = `👋WELCOME TO OUR ${me.first_name} ok KEEP REFER & MONEY💸\n\n👉🏻REGISTER OUR OFFICIAL GATEWAY🖇️https://srwallet.vercel.app/\n\n🚀 BUILDER = @srbotmakerbot`;
+              
+              return bot.sendMessage(userId, welcomeSub, {
                 reply_markup: { inline_keyboard: buttons },
                 parse_mode: 'HTML'
               });
@@ -1223,7 +1336,7 @@ class BotEngine {
         
         const kb = {
           inline_keyboard: [
-            [{ text: "📊 My Invites", callback_data: `sub_my_invites_${node.id}` }, { text: "🏆 Top Referrers", callback_data: `sub_leaderboard_${node.id}` }]
+            [{ text: "📊 My Invites", callback_data: `sub_my_invites_${node.id}` }]
           ]
         };
         return bot.sendMessage(userId, refMsg, { parse_mode: 'Markdown', reply_markup: kb }).catch(() => {});
@@ -1244,14 +1357,14 @@ class BotEngine {
           parse_mode: 'Markdown',
           reply_markup: {
             inline_keyboard: [
-              [{ text: `${gatewayName} | : APP URL RAHEGA`, url: gatewayLink }]
+              [{ text: "TAP TO OPEN GATEWAY NOW", url: gatewayLink }]
             ]
           }
         });
       }
 
       if (text.includes("Withdraw") || text.includes("💸") || text.includes("🚀 Withdraw")) {
-        if (!node.config.withdrawStatus) return bot.sendMessage(userId, node.config.withdrawOffText).catch(() => {});
+        if (!node.config.withdrawStatus) return bot.sendMessage(userId, "🔴 withdrawal off").catch(() => {});
         if (!user.walletId && !['poll', 'file', 'giveaway'].includes(node.type)) return bot.sendMessage(userId, "❌ **Wallet Not Set!**\n\nRegister and get your account number and set your wallet ID first using 'Set Payout Wallet' button.").catch(() => {});
         
         if (user.walletId && node.config.bannedWallets.has(user.walletId)) {
@@ -1297,8 +1410,28 @@ class BotEngine {
         bot.sendMessage(userId, "📁 **FILE STORAGE HUB**\n\nUpload files to get direct shareable links.\n\n*Status: Feature coming in Enterprise Cloud*");
       }
 
-      if (text === "💳 Tasks") {
+      if (text === "📋 Tasks") {
         bot.sendMessage(userId, "📋 **AVAILABLE TASKS**\n\n1. Visit Website (₹1)\n2. Watch Ad (₹0.5)\n3. Install App (₹10)\n\n*Contact @Admin to verify tasks.*");
+      }
+
+      if (text === "🎯 Play Bet") {
+        const win = Math.random() > 0.7;
+        const amount = win ? (Math.random() * 5 + 1) : 0;
+        const user = await this.ensureUserLoaded(node, userId);
+        if (user) {
+          if (win) {
+            user.balance += amount;
+            await this.saveUserToFirestore(node.id, userId, user);
+            bot.sendMessage(userId, `🎯 **BET SUCCESS!** 🎯\n\nYou rolled the lucky number and won **₹${amount.toFixed(2)}**! Your balance has been updated.`);
+          } else {
+            bot.sendMessage(userId, "🎯 **BET LOSS** 🎯\n\nBetter luck next time! Keep playing to win big rewards.");
+          }
+        }
+      }
+
+      if (text === "🎟️ Redeem") {
+        this.fsmStates.set(userId, { nodeId: node.id, action: "REDEEM_GIFT" });
+        bot.sendMessage(userId, "🎟️ **REDEEM GIFT CODE**\n\nPlease enter your gift code below to claim your reward:");
       }
     } catch (err: any) {
       console.error(`[MSG_HANDLER_ERR] User ${msg.chat.id}:`, err.message);
@@ -1389,10 +1522,20 @@ class BotEngine {
 
         const isAdminUser = isAdmin(userId);
 
+        // --- INTERCEPTOR: Node Ban Check ---
+        if (node.isBannedByAdmin && !isAdminUser) {
+           bot.answerCallbackQuery(query.id, { text: "❌ BANNED", show_alert: true });
+           const restrictedText = `🚫 **YOUR BOT IS BANNED FROM SR BOT MAKER ADMIN** 🚫\n\n` +
+                                `⚠️ *Reason:* Safety violation or Policy breach detected.\n\n` +
+                                `📞 **Please contact Admin to appeal:** @SR_TECNOLOGY_LTD`;
+           return bot.sendMessage(userId, restrictedText, { parse_mode: 'Markdown' });
+        }
+
         // --- INTERCEPTOR: Bot Maintenance ---
         if (!isAdminUser && !node.config.botStatus) {
            bot.answerCallbackQuery(query.id);
-           return bot.sendMessage(userId, "🔴 **BOTH FOUND OVER SEE YOU SOON**");
+           const offText = node.config.botOffText || `🔴 @${node.username} OVER SEE YOU SOON`;
+           return bot.sendMessage(userId, offText);
         }
 
         // Security: Block admin actions for non-admins
@@ -1419,10 +1562,14 @@ class BotEngine {
         if (data === 'adm_toggle_alerts') {
           node.config.userAlerts = !node.config.userAlerts;
           bot.answerCallbackQuery(query.id, { text: `User Alerts: ${node.config.userAlerts ? "ON" : "OFF"}` });
+          await this.saveNodeToFirestore(node);
           return this.sendAdminPanel(bot, node, userId, query.message?.message_id);
         }
 
         if (data === 'adm_toggle_bot') {
+          if (node.isBannedByAdmin && !node.config.botStatus) {
+            return bot.answerCallbackQuery(query.id, { text: "❌ BANNED: This node is restricted by SR HUB ADMIN.", show_alert: true });
+          }
           node.config.botStatus = !node.config.botStatus;
           bot.answerCallbackQuery(query.id, { text: `Bot Status: ${node.config.botStatus ? "ON" : "OFF"}` });
           if (!node.config.botStatus) {
@@ -1430,24 +1577,28 @@ class BotEngine {
           } else {
             this.logAdminAction(node, "Bot Engine Resumed by Admin");
           }
+          await this.saveNodeToFirestore(node);
           return this.sendAdminPanel(bot, node, userId, query.message?.message_id);
         }
 
         if (data === 'adm_toggle_withdraw') {
           node.config.withdrawStatus = !node.config.withdrawStatus;
           bot.answerCallbackQuery(query.id, { text: `Payout Status: ${node.config.withdrawStatus ? "ON" : "OFF"}` });
+          await this.saveNodeToFirestore(node);
           return this.sendAdminPanel(bot, node, userId, query.message?.message_id);
         }
 
         if (data === 'adm_toggle_antibot') {
           node.config.antiBot = !node.config.antiBot;
           bot.answerCallbackQuery(query.id, { text: `Anti-Bot: ${node.config.antiBot ? "ON" : "OFF"}` });
+          await this.saveNodeToFirestore(node);
           return this.sendAdminPanel(bot, node, userId, query.message?.message_id);
         }
 
         if (data === 'adm_toggle_autopay') {
           node.config.autoPayout = !node.config.autoPayout;
           bot.answerCallbackQuery(query.id, { text: `Auto Payout: ${node.config.autoPayout ? "ON" : "OFF"}` });
+          await this.saveNodeToFirestore(node);
           return this.sendAdminPanel(bot, node, userId, query.message?.message_id);
         }
 
@@ -1591,6 +1742,25 @@ class BotEngine {
           await this.saveNodeToFirestore(node);
           bot.answerCallbackQuery(query.id, { text: `Template ${tpl.toUpperCase()} Applied!` });
           return this.sendAdminPanel(bot, node, userId, query.message?.message_id);
+        }
+
+        if (data.startsWith('adm_bc_gift_')) {
+          const code = data.replace('adm_bc_gift_', '');
+          const g = node.config.giftCodes.get(code);
+          if (!g) return bot.answerCallbackQuery(query.id, { text: "Gift code not found" });
+
+          bot.answerCallbackQuery(query.id, { text: "🚀 Code Broadcast Started!" });
+          const bcText = `🧧 **NEW GIFT CODE ALERT!**\n\n🎁 Value: ₹${g.amount}\n👥 Max Uses: ${g.maxUses}\n\n🎫 Use code: \`${code}\`\n\nClick /redeem to use this code!`;
+          
+          this.fsmStates.set(userId, { 
+            nodeId: node.id, 
+            action: "BC_CONFIRM", 
+            text: bcText,
+            inline_keyboard: [[{ text: "🎁 CLAIM NOW", callback_data: "redeem_gift" }]] 
+          });
+          
+          // Re-trigger the broadcast confirm logic by simulating a CONFIRM message
+          return this.handleFSM(bot, node, userId, "CONFIRM", this.fsmStates.get(userId), { text: "CONFIRM" });
         }
 
         if (data === 'adm_back_main') {
@@ -1803,10 +1973,12 @@ class BotEngine {
         const dvStatus = node.config.deviceVerification ? "🟢 ON" : "🔴 OFF";
         const kb = {
           inline_keyboard: [
-            [{ text: "📝 Edit Dashboard Text", callback_data: "adm_set_dashText" }],
+            [{ text: "🖊 Edit Dashboard Text", callback_data: "adm_set_dashText" }],
             [{ text: "🖼️ Edit Dashboard Photo", callback_data: "adm_set_dashImg" }],
             [{ text: `🛡️ Device Verify: ${dvStatus}`, callback_data: "adm_tgl_dv" }],
-            [{ text: "🖊 Edit Welcome Msg", callback_data: `adm_set_joinNotice` }],
+            [{ text: "🛠️ Edit Build Info", callback_data: "adm_set_buildInfo" }],
+            [{ text: "🔴 Edit Bot Off Message", callback_data: "adm_set_botOffText" }],
+            [{ text: "📡 Manage Force Join", callback_data: `adm_view_forceJoin` }],
             [{ text: "👤 Support Handle", callback_data: `adm_set_supportContact` }],
             [{ text: "📢 Update Channel", callback_data: `adm_set_updateChannel` }],
             [{ text: "🗑️ Reset Customizations", callback_data: "adm_reset_ui" }],
@@ -1834,10 +2006,22 @@ class BotEngine {
         return bot.sendMessage(userId, "🖼️ **EDIT DASHBOARD PHOTO**\n\nSend the photo or file_id/URL to use as dashboard header:");
       }
 
+      if (data === 'adm_set_buildInfo') {
+        this.fsmStates.set(userId, { nodeId: node.id, action: "EDIT_buildInfo" });
+        return bot.sendMessage(userId, "🛠️ **EDIT BUILD INFO**\n\nEnter the new build info text (Markdown supported):");
+      }
+
+      if (data === 'adm_set_botOffText') {
+        this.fsmStates.set(userId, { nodeId: node.id, action: "EDIT_botOffText" });
+        return bot.sendMessage(userId, "🔴 **EDIT BOT OFF MESSAGE**\n\nEnter the message users see when bot is offline:");
+      }
+
       if (data === 'adm_reset_ui') {
         node.config.customDashboardText = undefined;
         node.config.customDashboardImage = undefined;
         node.config.customMenu = undefined;
+        node.config.buildInfoText = undefined;
+        node.config.botOffText = undefined;
         bot.answerCallbackQuery(query.id, { text: "✅ Customizations Reset!" });
         await this.saveNodeToFirestore(node);
         return this.sendAdminPanel(bot, node, userId, query.message?.message_id);
@@ -2229,6 +2413,13 @@ class BotEngine {
     const action = state.action;
     const isHub = state.nodeId === "HUB_NODE";
 
+    if (action === "HUB_ADD_CHANNEL") {
+      (this as any).hubForceJoinChannels.push(text);
+      await (this as any).saveHubConfig();
+      this.fsmStates.delete(userId);
+      return bot.sendMessage(userId, "✅ Channel added to Hub Must-Join list.");
+    }
+
     if (action === "BC_CENTER_MEDIA") {
       if (text === "Skip Media") {
         this.fsmStates.set(userId, { ...state, action: "BC_CENTER_TEXT" });
@@ -2579,38 +2770,38 @@ class BotEngine {
             
             if (state.nodeId === "HUB_NODE") {
                const snap = await db.collection('hubUsers').get();
-               targets.push({ bot: hubBot, nodeId: "HUB", uids: snap.docs.map(d => Number(d.id)) });
+               targets.push({ bot: hubBot, nodeId: "HUB", uids: snap.docs.map((d: any) => Number(d.id)) });
             } else if (state.nodeId === "HUB_GLOBAL_MESH") {
                // 1. Hub Users
                const hSnap = await db.collection('hubUsers').get();
-               targets.push({ bot: hubBot, nodeId: "HUB", uids: hSnap.docs.map(d => Number(d.id)) });
+               targets.push({ bot: hubBot, nodeId: "HUB", uids: hSnap.docs.map((d: any) => Number(d.id)) });
                // 2. All Nodes Users
                const allNodes = Array.from(this.nodes.values());
                for(const n of allNodes) {
-                 if(n.instance) {
+                 if(n.instance && n.config.botStatus) {
                    const nSnap = await db.collection('nodes').doc(n.id).collection('users').get();
-                   targets.push({ bot: n.instance, nodeId: n.id, uids: nSnap.docs.map(d => Number(d.id)) });
+                   targets.push({ bot: n.instance, nodeId: n.id, uids: nSnap.docs.map((d: any) => Number(d.id)) });
                  }
                }
             } else if (state.nodeId === "MESH_ONLY_GLOBAL") {
                 const allNodes = Array.from(this.nodes.values());
                 for(const n of allNodes) {
-                  if(n.instance) {
+                  if(n.instance && n.config.botStatus) {
                     const nSnap = await db.collection('nodes').doc(n.id).collection('users').get();
-                    targets.push({ bot: n.instance, nodeId: n.id, uids: nSnap.docs.map(d => Number(d.id)) });
+                    targets.push({ bot: n.instance, nodeId: n.id, uids: nSnap.docs.map((d: any) => Number(d.id)) });
                   }
                 }
             } else if (state.nodeId === "USER_OWN_NODES") {
                const userNodes = this.getUserNodes(userId);
                for(const n of userNodes) {
-                 if(n.instance) {
+                 if(n.instance && n.config.botStatus) {
                    const nSnap = await db.collection('nodes').doc(n.id).collection('users').get();
-                   targets.push({ bot: n.instance, nodeId: n.id, uids: nSnap.docs.map(d => Number(d.id)) });
+                   targets.push({ bot: n.instance, nodeId: n.id, uids: nSnap.docs.map((d: any) => Number(d.id)) });
                  }
                }
             } else {
                const snap = await db.collection('nodes').doc(node.id).collection('users').get();
-               targets.push({ bot: bot, nodeId: node.id, uids: snap.docs.map(d => Number(d.id)) });
+               targets.push({ bot: bot, nodeId: node.id, uids: snap.docs.map((d: any) => Number(d.id)) });
             }
 
             let total = targets.reduce((acc, t) => acc + t.uids.length, 0);
@@ -2618,7 +2809,7 @@ class BotEngine {
             let failed = 0;
             let processed = 0;
             
-            const progressMsg = await bot.sendMessage(userId, `📊 **MESH BROADCAST INITIATED**\n\n🔄 Total Targets: ${total}\n⏳ Preparing engine...`);
+            const progressMsg = await bot.sendMessage(userId, `📊 **MESH BROADCAST INITIATED**\n\n🔄 Total Targets: ${total}\n⏳ Delivering messages...`);
             const startTime = Date.now();
 
             for (const target of targets) {
@@ -2632,22 +2823,23 @@ class BotEngine {
                   } else if (content.text) {
                     await target.bot.sendMessage(uid, content.text, opts);
                   } else {
-                    // Use copyMessage or resend depending on availability
                     try {
                         await target.bot.copyMessage(uid, userId, content.message_id, { reply_markup: { inline_keyboard: state.buttons || [] } });
                     } catch(e) {
-                         // Fallback for different bot instances sending content from Hub
+                         // Fallback resend
                          if (content.text) await target.bot.sendMessage(uid, content.text, opts);
+                         else if (content.caption) await target.bot.sendMessage(uid, content.caption, opts);
                          else throw e;
                     }
                   }
                   success++;
-                } catch (e) {
+                } catch (e: any) {
                   failed++;
+                  logSys(`[SUB_BC_FAIL] To ${uid} on ${target.nodeId}: ${e.message}`);
                 }
                 
                 processed++;
-                if (processed % 20 === 0 || processed === total) {
+                if (processed % 15 === 0 || processed === total) {
                   const percentage = Math.round((processed / total) * 100);
                   const elapsed = (Date.now() - startTime) / 1000;
                   const rate = processed / elapsed;
@@ -2662,7 +2854,7 @@ class BotEngine {
                     message_id: progressMsg.message_id
                   }).catch(() => {});
                 }
-                await new Promise(r => setTimeout(r, 45));
+                await new Promise(r => setTimeout(r, 40));
               }
             }
             bot.sendMessage(userId, `✅ **Global Mesh Broadcast Complete!**\n\nTotal: ${total}\nSuccess: ${success}\nFailed: ${failed}`);
@@ -2727,12 +2919,19 @@ class BotEngine {
           currentClaims: 0,
           status: 'active'
         });
-        bot.sendMessage(userId, `✅ **Gift Code Created Successfully!**\n\n🎫 Code: \`${code}\`\n💰 Value: ₹${amt.toFixed(2)}\n👥 Limit: ${uses} users\n\nShare this with your community!`, { parse_mode: 'Markdown' });
-        this.logAdminAction(node, `Created gift code ${code} (₹${amt}, ${uses} uses)`);
         await this.saveNodeToFirestore(node);
+        const msg = `🎁 **GIFT CODE CREATED!**\n\n🎫 Code: \`${code}\`\n💰 Value: ₹${amt}\n👥 Limit: ${uses} Users\n\n_Share this code with your users to claim reward._`;
+        bot.sendMessage(userId, msg, { parse_mode: 'Markdown' });
+        
+        const kb = {
+          inline_keyboard: [[{ text: "📢 Broadcast Code", callback_data: `adm_bc_gift_${code}` }, { text: "❌ Later", callback_data: "adm_back_main" }]]
+        };
+        bot.sendMessage(userId, "Do you want to broadcast this gift code to all users?", { reply_markup: kb });
       } else {
         bot.sendMessage(userId, "❌ Invalid number of uses.");
       }
+      this.fsmStates.delete(userId);
+      return;
     }
 
     if (action === "BAN_WALLET") {
@@ -2824,6 +3023,18 @@ class BotEngine {
         await this.saveUserToFirestore(node.id, userId, user);
         bot.sendMessage(userId, "✅ Wallet ID saved successfully.");
       }
+    }
+
+    if (action === "EDIT_botOffText") {
+      node.config.botOffText = text;
+      bot.sendMessage(userId, "✅ Maintenance message updated.");
+      await this.saveNodeToFirestore(node);
+    }
+
+    if (action === "EDIT_buildInfo") {
+      node.config.buildInfoText = text;
+      bot.sendMessage(userId, "✅ Build info message updated.");
+      await this.saveNodeToFirestore(node);
     }
 
     if (action === "EDIT_DASH_TEXT") {
@@ -3111,6 +3322,7 @@ const ADMIN_HUB_KB = {
       [{ text: "🤖 My All Bot" }, { text: "➕ Create New Bot" }],
       [{ text: "🛠 Manage Nodes" }, { text: "🛠 Template Designer" }],
       [{ text: "⚙️ Hub Settings" }, { text: "📊 Hub Stats" }],
+      [{ text: "📡 Must Join Channels" }],
       [{ text: "🔙 Back to User Menu" }]
     ],
     resize_keyboard: true
@@ -3342,6 +3554,11 @@ async function startServer() {
       hubInfo = info;
       logSys(`Hub Bot Authenticated: @${info.username}`);
       if (!isDev) syncWebhooks();
+      
+      hubBot.setMyCommands([
+        { command: 'start', description: "Let's Start The Advantage Of Earning" },
+        { command: 'build', description: "Bot engine & developer" }
+      ]).catch(() => {});
     }).catch((err: any) => {
       logSys(`[HUB_INIT_FATAL] ${err.message}`);
     });
@@ -3365,8 +3582,27 @@ async function startServer() {
         const ADMIN_IDS = [6561010416];
         if (process.env.ADMIN_HUB_ID) ADMIN_IDS.push(Number(process.env.ADMIN_HUB_ID));
 
+        const isAdmin = ADMIN_IDS.includes(chatId);
+        
+        // Intercept: Force Join Check for Hub
+        if (!isAdmin && engine.getHubForceJoinChannels().length > 0) {
+           const joinedStatuses = await Promise.all(engine.getHubForceJoinChannels().map((ch: string) => (engine as any).checkForceJoin(hubBot, ch, chatId)));
+           if (joinedStatuses.includes(false)) {
+              return (engine as any).sendHubJoinForce(hubBot, chatId);
+           }
+        }
+
         if (text === "/myid") {
           return hubBot.sendMessage(chatId, `👤 **YOUR TELEGRAM ID:** \`${chatId}\``, { parse_mode: 'Markdown' });
+        }
+
+        if (text === "/build") {
+          const buildMsg = `🔧 **BUILD INFO**\n` +
+            `├ 🤖 Engine: SR BOT [MAKER] v2.0\n` +
+            `├ 👨💻 Developer: @SR_TECNOLOGY_LTD🇮🇳\n` +
+            `└ ☁️ Architecture: Cloud Node Deployment\n\n` +
+            `Building the future of Telegram automation.`;
+          return hubBot.sendMessage(chatId, buildMsg, { parse_mode: 'Markdown' });
         }
 
         if (text === "/sradmin1") {
@@ -3420,6 +3656,22 @@ async function startServer() {
           return hubBot.sendMessage(chatId, "📢 **All Bot Broadcast (NETWORK)**\n\nThis will send your message to ALL users across ALL deployed bots.\n\nSend your photo or video or skip it.", {
             reply_markup: { keyboard: [[{ text: "Skip Media" }], [{ text: "❌ Cancel" }]], resize_keyboard: true }
           });
+        }
+
+        if (text === "📡 Must Join Channels") {
+          if (!ADMIN_IDS.includes(chatId)) return;
+          const channels = engine.getHubForceJoinChannels() || [];
+          let msg = "📡 **HUB MUST JOIN CHANNELS**\n\nUsers must join these channels to use the builder:\n\n";
+          if (channels.length === 0) msg += "None set.";
+          else channels.forEach((c: string, i: number) => msg += `${i+1}. ${c}\n`);
+
+          const kb = {
+            inline_keyboard: [
+              [{ text: "➕ Add Channel", callback_data: "hub_add_ch" }, { text: "❌ Clear All", callback_data: "hub_clear_ch" }],
+              [{ text: "🔙 Close", callback_data: "hub_back_adm" }]
+            ]
+          };
+          return hubBot.sendMessage(chatId, msg, { reply_markup: kb, parse_mode: 'Markdown' });
         }
 
         if (text === "/help") {
@@ -3480,7 +3732,7 @@ async function startServer() {
              return hubBot.sendMessage(chatId, "🛠 **HUB TEMPLATE DESIGNER**\n\nSelect a bot type to customize its **DEFAULT** configuration (UI, rules, bonus, etc.) for all future deployments.", { reply_markup: kb });
           }
 
-          const nodesList = Array.from(engine.getNodes().values());
+          const nodesList = Array.from(engine.getNodes().values()) as BotNode[];
           if (nodesList.length === 0) return hubBot.sendMessage(chatId, "❌ No nodes deployed yet.");
           
           const buttons: any[][] = [];
@@ -3504,15 +3756,22 @@ async function startServer() {
           const nodes = isAdmin ? Array.from(engine.getNodes().values()) : engine.getUserNodes(chatId);
           
           if (nodes.length > 0) {
-            let list = isAdmin ? `📡 **GLOBAL NETWORK NODES (${nodes.length}):**\n\n` : `📡 **YOUR DEPLOYED NODES (${nodes.length}):**\n\n`;
-            list += `**Total Bot Deployed:** ${nodes.length}\n━━━━━━━━━━━━━━\n`;
+            hubBot.sendMessage(chatId, `📡 **${isAdmin ? 'GLOBAL NETWORK NODES' : 'YOUR DEPLOYED NODES'} (${nodes.length}):**\n\n━━━━━━━━━━━━━━`).catch(() => {});
             
-            nodes.forEach((n: any, idx: number) => {
-              const status = !!n.instance ? '🟢 LIVE' : '🔴 OFFLINE';
-              list += `${idx + 1}. **@${n.username}**\n   🆔 Node: \`${n.id}\`\n   📊 Status: ${status}\n   🛠 Type: ${n.type?.toUpperCase()}\n\n`;
+            nodes.forEach((n: any) => {
+              const statusText = !!n.instance && n.config.botStatus ? '🟢 LIVE' : '🔴 OFFLINE';
+              const banText = n.isBannedByAdmin ? '🚫 BANNED BY ADMIN' : '✅ SYSTEM REGULAR';
+              
+              const detail = `🤖 **BOT:** @${n.username}\n🆔 ID: \`${n.id}\`\n📊 Status: ${statusText}\n🛡 Safety: ${banText}\n🛠 Type: ${String(n.type).toUpperCase()}`;
+              
+              const kb = {
+                inline_keyboard: [
+                  [{ text: n.config.botStatus ? "🔴 SWITCH OFF" : "🟢 SWITCH ON", callback_data: `sub_node_tgl_${n.id}` }],
+                  [{ text: "🚀 OPEN MANAGEMENT", callback_data: `hub_edit_node_${n.id}` }]
+                ]
+              };
+              hubBot.sendMessage(chatId, detail, { parse_mode: 'Markdown', reply_markup: kb }).catch(() => {});
             });
-            list += "━━━━━━━━━━━━━━\nManage nodes from their respective admin panels (/adminhelp1).";
-            hubBot.sendMessage(chatId, list, { parse_mode: 'Markdown' }).catch(() => {});
           } else {
             hubBot.sendMessage(chatId, "❌ No active nodes found.").catch(() => {});
           }
@@ -3624,13 +3883,95 @@ async function startServer() {
         const nodeId = data.replace('hub_edit_node_', '');
         const node = engine.getNodes().get(nodeId);
         if (!node) return hubBot.answerCallbackQuery(query.id, { text: "Node not found" });
+
+        // MASTER ADMIN BAN CHECK
+        const ADMIN_IDS = [6561010416];
+        if (process.env.ADMIN_HUB_ID) ADMIN_IDS.push(Number(process.env.ADMIN_HUB_ID));
+        const isMasterAdmin = ADMIN_IDS.includes(userId);
+
+        if (node.isBannedByAdmin && !isMasterAdmin) {
+           hubBot.answerCallbackQuery(query.id, { text: "❌ Access Restricted", show_alert: false });
+           const restrictedText = `🚫 **YOUR BOT IS BANNED FROM SR BOT MAKER ADMIN** 🚫\n\n` +
+                                `⚠️ *Reason:* Safety violation or Policy breach detected.\n\n` +
+                                `🛠 *System Node:* \`${node.id}\`\n\n` +
+                                `📞 **Please contact Admin to appeal:** @SR_TECNOLOGY_LTD`;
+           return hubBot.sendMessage(chatId, restrictedText, { parse_mode: 'Markdown' });
+        }
         
         engine.fsmStates.set(userId, { nodeId: node.id, action: "HUB_MANAGE_SUBBOT" });
         hubBot.answerCallbackQuery(query.id, { text: `Managing @${node.username}` });
         return engine.sendAdminPanel(hubBot, node, userId, query.message?.message_id);
       }
 
+      if (data.startsWith('sub_node_tgl_')) {
+        const nodeId = data.replace('sub_node_tgl_', '');
+        const node = engine.getNodes().get(nodeId);
+        if (!node) return hubBot.answerCallbackQuery(query.id, { text: "Node not found" });
+        
+        if (node.ownerId !== userId) return hubBot.answerCallbackQuery(query.id, { text: "Unauthorized" });
+
+        if (node.isBannedByAdmin && !node.config.botStatus) {
+            return hubBot.answerCallbackQuery(query.id, { text: "❌ This bot is restricted by SR HUB ADMIN and cannot be started.", show_alert: true });
+        }
+
+        node.config.botStatus = !node.config.botStatus;
+        await engine.saveNodeToFirestore(node);
+        hubBot.answerCallbackQuery(query.id, { text: `Bot ${node.config.botStatus ? 'Started' : 'Stopped'}` });
+        
+        const statusText = !!node.instance && node.config.botStatus ? '🟢 LIVE' : '🔴 OFFLINE';
+        const banText = node.isBannedByAdmin ? '🚫 BANNED BY ADMIN' : '✅ SYSTEM REGULAR';
+        const detail = `🤖 **BOT:** @${node.username}\n🆔 ID: \`${node.id}\`\n📊 Status: ${statusText}\n🛡 Safety: ${banText}\n🛠 Type: ${String(node.type).toUpperCase()}`;
+        
+        const kb = {
+          inline_keyboard: [
+            [{ text: node.config.botStatus ? "🔴 SWITCH OFF" : "🟢 SWITCH ON", callback_data: `sub_node_tgl_${node.id}` }],
+            [{ text: "🚀 OPEN MANAGEMENT", callback_data: `hub_edit_node_${node.id}` }]
+          ]
+        };
+        return hubBot.editMessageText(detail, { chat_id: chatId, message_id: query.message?.message_id, reply_markup: kb, parse_mode: 'Markdown' });
+      }
+
+      if (data.startsWith('adm_hub_ban_tgl_')) {
+        const nodeId = data.replace('adm_hub_ban_tgl_', '');
+        const node = engine.getNodes().get(nodeId);
+        if (!node) return hubBot.answerCallbackQuery(query.id, { text: "Node not found" });
+
+        const ADMIN_IDS = [6561010416];
+        if (process.env.ADMIN_HUB_ID) ADMIN_IDS.push(Number(process.env.ADMIN_HUB_ID));
+        if (!ADMIN_IDS.includes(userId)) return hubBot.answerCallbackQuery(query.id);
+
+        node.isBannedByAdmin = !node.isBannedByAdmin;
+        if (node.isBannedByAdmin) {
+            node.config.botStatus = false; // Force stop on ban
+        }
+        await engine.saveNodeToFirestore(node);
+        hubBot.answerCallbackQuery(query.id, { text: `Node ${node.isBannedByAdmin ? 'Banned' : 'Unbanned'}` });
+        return engine.sendAdminPanel(hubBot, node, userId, query.message?.message_id);
+      }
+
       // Relay admin callbacks if in Hub-Manage mode
+      if (data === "hub_add_ch") {
+        engine.fsmStates.set(userId, { nodeId: "HUB_NODE", action: "HUB_ADD_CHANNEL" });
+        return hubBot.sendMessage(chatId, "➕ **HUB ADD CHANNEL**\n\nSend the channel username (e.g. `@MyChannel`) or chat ID (e.g. `-100...`):");
+      }
+
+      if (data === "hub_clear_ch") {
+        engine.getHubForceJoinChannels().length = 0;
+        await (engine as any).saveHubConfig();
+        hubBot.answerCallbackQuery(query.id, { text: "Force-join channels cleared." });
+        return hubBot.editMessageText("📡 **HUB MUST JOIN CHANNELS**\n\nChannels cleared.", { chat_id: chatId, message_id: query.message?.message_id });
+      }
+
+      if (data === "hub_check_join") {
+        const channels = engine.getHubForceJoinChannels() || [];
+        const joinedStatuses = await Promise.all(channels.map((ch: string) => (engine as any).checkForceJoin(hubBot, ch, userId)));
+        if (joinedStatuses.includes(false)) {
+           return hubBot.answerCallbackQuery(query.id, { text: "❌ You have not joined all channels!", show_alert: true });
+        }
+        hubBot.answerCallbackQuery(query.id, { text: "✅ Access Granted!" });
+        return hubBot.sendMessage(chatId, "✅ **Verification successful!** Type /start to begin.");
+      }
+
       if (currentHubState?.action === "HUB_MANAGE_SUBBOT" || currentHubState?.action === "HUB_MANAGE_BLUEPRINT") {
         const node = engine.getNodes().get(currentHubState.nodeId);
         if (node) {
@@ -3650,7 +3991,7 @@ async function startServer() {
                 };
                 return hubBot.editMessageText("🛠 **HUB TEMPLATE DESIGNER**", { chat_id: userId, message_id: query.message?.message_id, reply_markup: kb });
              }
-             const nodesList = Array.from(engine.getNodes().values());
+             const nodesList = Array.from(engine.getNodes().values()) as BotNode[];
              const buttons: any[][] = [];
               for (let i = 0; i < nodesList.length; i += 2) {
                 const row = [];
@@ -3677,16 +4018,16 @@ async function startServer() {
         engine.fsmStates.delete(userId);
         
         const run = async () => {
-          let targets: { bot: any, uids: number[], botName: string }[] = [];
+          let targets: { bot: any, nodeId: string, uids: number[], botName: string }[] = [];
           if (state.broadcastType === "HUB") {
-             const snap = await getDocs(collection(cdb, 'hubUsers'));
-             targets.push({ bot: hubBot, uids: snap.docs.map(d => Number(d.id)), botName: "SR HUB MASTER" });
+             const snap = await db.collection('hubUsers').get();
+             targets.push({ bot: hubBot, nodeId: "HUB", uids: snap.docs.map((d: any) => Number(d.id)), botName: "SR HUB MASTER" });
           } else if (state.broadcastType === "ALL_BOTS") {
-             const nodes = Array.from(engine.getNodes().values());
+             const nodes = Array.from(engine.getNodes().values()) as BotNode[];
              for (const node of nodes) {
-                if (node.instance) {
-                   const snap = await getDocs(collection(cdb, 'nodes', node.id, 'users'));
-                   targets.push({ bot: node.instance, uids: snap.docs.map(d => Number(d.id)), botName: `@${node.username}` });
+                if (node.instance && node.config.botStatus !== false) {
+                   const snap = await db.collection('nodes').doc(node.id).collection('users').get();
+                   targets.push({ bot: node.instance, nodeId: node.id, uids: snap.docs.map((d: any) => Number(d.id)), botName: `@${node.username}` });
                 }
              }
           }
@@ -3717,23 +4058,23 @@ async function startServer() {
               } catch (e: any) {
                 fCount++;
                 failed++;
-                logSys(`[HUB_BC_FAIL] To ${uid} on ${target.botName}: ${e.message}`);
+                logSys(`[HUB_BC_FAIL] To ${uid} on ${target.nodeId}: ${e.message}`);
               }
-              await new Promise(r => setTimeout(r, 45));
+              await new Promise(r => setTimeout(r, 40));
             }
-            summaryReportArr.push(`🔹 **${target.botName}**\n• Users: ${target.uids.length}\n• Success: ${sCount}\n• Failures: ${fCount}\n📈 Success Rate: ${((sCount / target.uids.length) * 100 || 0).toFixed(2)}%`);
+            summaryReportArr.push(`🔹 **${target.botName}**\n• Users: ${target.uids.length}\n• Success: ${sCount}\n• Failures: ${fCount}\n📈 Success Rate: ${((sCount / Math.max(1, target.uids.length)) * 100).toFixed(2)}%`);
           }
 
           const duration = Math.floor((Date.now() - startTime) / 1000);
           const summary = `📊 **Broadcast Summary Report**\n\n` +
-            `⏱ **Duration:** ${new Date(startTime).toLocaleString()}\n` +
+            `⏱ **Start:** ${new Date(startTime).toLocaleString()}\n` +
             `🏁 **End:** ${new Date().toLocaleString()}\n` +
             `⌛ **Time Taken:** ${duration} Seconds\n\n` +
             `📦 **Overall Results:**\n` +
             `• Total Unique Users (Est): ${total}\n` +
             `✅ **Success: ${success}**\n` +
             `❌ **Failed: ${failed}**\n` +
-            `📈 **Success Rate: ${((success / total) * 100 || 0).toFixed(2)}%**\n\n` +
+            `📈 **Success Rate: ${((success / Math.max(1, total)) * 100).toFixed(2)}%**\n\n` +
             summaryReportArr.join('\n\n');
           
           hubBot.sendMessage(userId, summary, { parse_mode: 'Markdown' });

@@ -1313,7 +1313,7 @@ class BotEngine {
 
       if (!user) return;
 
-      if (text.includes("Bonus") || text.includes("🎁") || text.includes("🎉 Gift Code") || text.includes("Bonus")) {
+      if (text.includes("Bonus") || text.includes("🎁") || text.includes("Bonus")) {
         const kb = {
           inline_keyboard: [
             [{ text: "✨ Daily Bonus", callback_data: `sub_daily_bonus_${node.id}` }],
@@ -1391,47 +1391,35 @@ class BotEngine {
       }
 
       if (text === "🎯 Play Bet") {
-        const rand = Math.random();
-        if (rand < 0.4) {
-          user.balance += 5;
-          bot.sendMessage(userId, "🎯 **YOU WON!**\n\nTarget hit perfectly. +₹5 added to balance.").catch(() => {});
+        const user = await this.ensureUserLoaded(node, userId);
+        if (!user) return;
+        const win = Math.random() > 0.7;
+        const amount = win ? (Math.random() * 5 + 1) : 0;
+        if (win) {
+          user.balance += amount;
+          await this.saveUserToFirestore(node.id, userId, user);
+          bot.sendMessage(userId, `🎯 **BET SUCCESS!** 🎯\n\nYou won **₹${amount.toFixed(2)}**! Your balance has been updated.`);
         } else {
-          user.balance = Math.max(0, user.balance - 2);
-          bot.sendMessage(userId, "❌ **MISSED!**\n\nBetter luck next time. -₹2 deducted.").catch(() => {});
+          bot.sendMessage(userId, "🎯 **BET LOSS** 🎯\n\nBetter luck next time! Keep playing to win big rewards.");
         }
-        await this.saveUserToFirestore(node.id, userId, user);
+        return;
       }
 
       if (text === "📊 Create Poll") {
-        bot.sendPoll(userId, "How is our system working?", ["Best", "Good", "Needs Work"], { is_anonymous: false });
+        return bot.sendPoll(userId, "How is our system working?", ["Best", "Good", "Needs Work"], { is_anonymous: false });
       }
 
       if (text === "📁 File Store") {
-        bot.sendMessage(userId, "📁 **FILE STORAGE HUB**\n\nUpload files to get direct shareable links.\n\n*Status: Feature coming in Enterprise Cloud*");
+        return bot.sendMessage(userId, "📁 **FILE STORAGE HUB**\n\nUpload files to get direct shareable links.\n\n*Status: Feature coming in Enterprise Cloud*");
       }
 
       if (text === "📋 Tasks") {
-        bot.sendMessage(userId, "📋 **AVAILABLE TASKS**\n\n1. Visit Website (₹1)\n2. Watch Ad (₹0.5)\n3. Install App (₹10)\n\n*Contact @Admin to verify tasks.*");
+        return bot.sendMessage(userId, "📋 **AVAILABLE TASKS**\n\n1. Visit Website (₹1)\n2. Watch Ad (₹0.5)\n3. Install App (₹10)\n\n*Contact @Admin to verify tasks.*");
       }
 
-      if (text === "🎯 Play Bet") {
-        const win = Math.random() > 0.7;
-        const amount = win ? (Math.random() * 5 + 1) : 0;
-        const user = await this.ensureUserLoaded(node, userId);
-        if (user) {
-          if (win) {
-            user.balance += amount;
-            await this.saveUserToFirestore(node.id, userId, user);
-            bot.sendMessage(userId, `🎯 **BET SUCCESS!** 🎯\n\nYou rolled the lucky number and won **₹${amount.toFixed(2)}**! Your balance has been updated.`);
-          } else {
-            bot.sendMessage(userId, "🎯 **BET LOSS** 🎯\n\nBetter luck next time! Keep playing to win big rewards.");
-          }
-        }
-      }
-
-      if (text === "🎟️ Redeem") {
+      if (text === "🎟️ Redeem" || text === "Gift Code" || text.includes("Redeem")) {
         this.fsmStates.set(userId, { nodeId: node.id, action: "REDEEM_GIFT" });
-        bot.sendMessage(userId, "🎟️ **REDEEM GIFT CODE**\n\nPlease enter your gift code below to claim your reward:");
+        return bot.sendMessage(userId, "🎟️ **REDEEM GIFT CODE**\n\nPlease enter your gift code below to claim your reward:");
       }
     } catch (err: any) {
       console.error(`[MSG_HANDLER_ERR] User ${msg.chat.id}:`, err.message);

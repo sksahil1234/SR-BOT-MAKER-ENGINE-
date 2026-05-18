@@ -425,23 +425,21 @@ class BotEngine {
     for (let i = 0; i < chList.length; i += 2) {
        const row = [];
        const ch1 = chList[i];
-       const url1 = ch1.startsWith('http') ? ch1 : (ch1.startsWith('@') ? `https://t.me/${ch1.substring(1)}` : `https://t.me/c/${ch1.replace('-100', '')}/999999999`);
-       row.push({ text: `➕ Join`, url: url1 });
+       row.push({ text: `➕ Channel ${i+1}`, url: this.formatChannelLink(ch1) });
 
        if (i + 1 < chList.length) {
           const ch2 = chList[i + 1];
-          const url2 = ch2.startsWith('http') ? ch2 : (ch2.startsWith('@') ? `https://t.me/${ch2.substring(1)}` : `https://t.me/c/${ch2.replace('-100', '')}/999999999`);
-          row.push({ text: `➕ Join`, url: url2 });
+          row.push({ text: `➕ Channel ${i+2}`, url: this.formatChannelLink(ch2) });
        }
        buttons.push(row);
     }
-    buttons.push([{ text: "🔥 Claim", callback_data: `check_join_none` }]);
+    buttons.push([{ text: "✅ Check Membership", callback_data: `check_join_none` }]);
 
-    const header = `👋 <b>Hey There User Welcome To Bot!</b>\n\n🛑 <b>Must Join Total Channel To Use Our Bot</b>\n\n🎯 <b>After Joining Click Claim</b>`;
+    const header = `👋 **Attention!**\n\nTo use this bot, you must join our official channels below.\n\n👇 **Click the buttons to join:**`;
     if (messageId) {
-      return bot.editMessageText(header, { chat_id: userId, message_id: messageId, reply_markup: { inline_keyboard: buttons }, parse_mode: 'HTML' }).catch(() => {});
+      return bot.editMessageText(header, { chat_id: userId, message_id: messageId, reply_markup: { inline_keyboard: buttons }, parse_mode: 'Markdown' }).catch(() => {});
     } else {
-      return bot.sendMessage(userId, header, { reply_markup: { inline_keyboard: buttons }, parse_mode: 'HTML' }).catch(() => {});
+      return bot.sendMessage(userId, header, { reply_markup: { inline_keyboard: buttons }, parse_mode: 'Markdown' }).catch(() => {});
     }
   }
 
@@ -480,23 +478,21 @@ class BotEngine {
     for (let i = 0; i < chList.length; i += 2) {
        const row = [];
        const ch1 = chList[i];
-       const url1 = ch1.startsWith('http') ? ch1 : (ch1.startsWith('@') ? `https://t.me/${ch1.substring(1)}` : `https://t.me/c/${ch1.replace('-100', '')}/999999999`);
-       row.push({ text: `➕ Join`, url: url1 });
+       row.push({ text: `➕ Channel ${i+1}`, url: this.formatChannelLink(ch1) });
 
        if (i + 1 < chList.length) {
           const ch2 = chList[i + 1];
-          const url2 = ch2.startsWith('http') ? ch2 : (ch2.startsWith('@') ? `https://t.me/${ch2.substring(1)}` : `https://t.me/c/${ch2.replace('-100', '')}/999999999`);
-          row.push({ text: `➕ Join`, url: url2 });
+          row.push({ text: `➕ Channel ${i+2}`, url: this.formatChannelLink(ch2) });
        }
        buttons.push(row);
     }
-    buttons.push([{ text: "🔥 Claim", callback_data: `hub_check_join` }]);
+    buttons.push([{ text: "✅ Check Membership", callback_data: `hub_check_join` }]);
 
-    const header = `👋 <b>WELCOME TO OUR HUB!</b>\n\n🛑 <b>Must Join These Channels To Use Our Builder</b>\n\n🎯 <b>After Joining Click Claim Button</b>`;
+    const header = `👋 **WELCOME TO SR HUB!**\n\n🛑 **MUST JOIN CHANNELS TO CONTINUE!**\n\nYou must be a subscriber of These channels to use the bot maker.`;
     if (messageId) {
-      return bot.editMessageText(header, { chat_id: userId, message_id: messageId, reply_markup: { inline_keyboard: buttons }, parse_mode: 'HTML' }).catch(() => {});
+      return bot.editMessageText(header, { chat_id: userId, message_id: messageId, reply_markup: { inline_keyboard: buttons }, parse_mode: 'Markdown' }).catch(() => {});
     } else {
-      return bot.sendMessage(userId, header, { reply_markup: { inline_keyboard: buttons }, parse_mode: 'HTML' }).catch(() => {});
+      return bot.sendMessage(userId, header, { reply_markup: { inline_keyboard: buttons }, parse_mode: 'Markdown' }).catch(() => {});
     }
   }
 
@@ -705,15 +701,16 @@ class BotEngine {
     setInterval(() => {
       this.nodes.forEach(async (node) => {
         try {
+          if (node.instance === "INVALID_TOKEN") return;
           if (!node.instance) {
-            logSys(`[MONITOR] Node ${node.id} instance missing. Redeploying...`);
+            logSys(`[MONITOR] Node ${node.id} resetting...`);
             this.redeployInstance(node);
           }
         } catch (err: any) {
           logSys(`[MONITOR_ERR] Node ${node.id}: ${err.message}`);
         }
       });
-    }, 30000); 
+    }, 60000); 
   }
 
   private saveData() {
@@ -736,11 +733,10 @@ class BotEngine {
       });
 
       bot.on('polling_error', (err: any) => {
-        if (err.message.includes('401')) {
-          logSys(`[CRITICAL_AUTH] Node ${node.id} token is invalid (401). Stopping polling.`);
+        if (err.message.includes('401') || err.message.includes('404')) {
+          logSys(`[CRITICAL_AUTH] Node ${node.id} token invalid. Stopping.`);
           bot.stopPolling();
-        } else if (!err.message.includes('EFATAL')) {
-          logSys(`[POLL_ERR] Node ${node.id}: ${err.message}`);
+          node.instance = "INVALID_TOKEN" as any;
         }
       });
 
@@ -749,32 +745,26 @@ class BotEngine {
       node.instance = bot;
       node.username = me.username || node.username;
       
-      // Webhook Setup (Only for Production)
       if (!isDev && BASE_URL) {
         await bot.setWebHook(`${BASE_URL}/api/webhook/${node.id}`, {
           allowed_updates: ["message", "callback_query", "chat_member"],
           drop_pending_updates: true
         });
-        logSys(`[REDEPLOY] Node ${node.id} (@${me.username}) webhook established.`);
-      } else if (isDev) {
-        await bot.deleteWebHook().catch(() => {});
-        logSys(`[REDEPLOY] Node ${node.id} (@${me.username}) polling started (DEV).`);
       }
-
-      // Professional Branding
-      const builder = "@srbotmakerbot";
-      const botText = `👋WELCOME TO OUR ${me.first_name} ok KEEP REFER & MONEY💸\n\n👉🏻REGISTER OUR OFFICIAL GATEWAY🖇️https://srwallet.vercel.app/\n\n🚀 BUILDER = ${builder}`;
-      bot.setMyDescription({ description: botText }).catch(() => {});
-      bot.setMyShortDescription({ short_description: "Industrial grade auto-payout engine." }).catch(() => {});
 
       bot.setMyCommands([
         { command: 'start', description: "Let's Start The Advantage Of Earning" },
         { command: 'build', description: "About Our Builder" }
       ]).catch(() => {});
 
-      logSys(`Node ${node.id} (@${me.username}) auto-restarted successfully.`);
+      logSys(`Node ${node.id} (@${me.username}) restarted.`);
     } catch (err: any) {
-      logSys(`[REDEPLOY_ERR] Node ${node.id}: ${err.message}`);
+      if (err.message.includes('401') || err.message.includes('404')) {
+        logSys(`[REDEPLOY_CANCEL] Node ${node.id} has invalid token: ${err.message}`);
+        node.instance = "INVALID_TOKEN" as any; // Persistent marker
+      } else {
+        logSys(`[REDEPLOY_ERR] Node ${node.id}: ${err.message}`);
+      }
     }
   }
 
@@ -2376,20 +2366,41 @@ class BotEngine {
 
   private async checkForceJoin(bot: any, channelId: string, userId: number): Promise<boolean> {
     try {
-      let finalId = channelId;
-      if (channelId.includes('t.me/')) {
-        const urlMatch = channelId.match(/t\.me\/(?:\+|joinchat\/)?([^\/\?]+)/);
-        if (urlMatch && !channelId.includes('joinchat') && !channelId.includes('t.me/+')) {
-          finalId = '@' + urlMatch[1];
+      let finalId = channelId.trim();
+      
+      if (finalId.includes('t.me/')) {
+        const usernameMatch = finalId.match(/t\.me\/([a-zA-Z0-9_]{5,})/);
+        const joinMatch = finalId.match(/t\.me\/\+([a-zA-Z0-9_]+)/);
+        
+        if (usernameMatch && !finalId.includes('joinchat')) {
+          finalId = '@' + usernameMatch[1];
+        } else if (joinMatch || finalId.includes('joinchat')) {
+          return true; // Bypass check for invite links
+        } else {
+          return true; // Unknown link, don't block
         }
       }
       
       const member = await bot.getChatMember(finalId, userId);
-      const isJoined = ['member', 'administrator', 'creator'].includes(member.status);
-      return isJoined;
+      return ['member', 'administrator', 'creator'].includes(member.status);
     } catch (err: any) {
-      return false;
+      logSys(`[CHECK_JOIN_FAIL] ${channelId}: Bot might not be admin there.`);
+      return true; // Error usually means bot is not admin, don't block user
     }
+  }
+
+  private formatChannelLink(ch: string): string {
+    if (!ch) return 'https://t.me/Telegram';
+    const clean = ch.trim();
+    if (clean.startsWith('http')) return clean;
+    if (clean.startsWith('@')) return `https://t.me/${clean.substring(1)}`;
+    if (clean.startsWith('-100')) {
+      const cleanId = clean.replace('-100', '');
+      return `https://t.me/c/${cleanId}/1`;
+    }
+    // Assume username without @
+    if (/^[a-zA-Z0-9_]{5,}$/.test(clean)) return `https://t.me/${clean}`;
+    return `https://t.me/${clean}`;
   }
 
   private logAdminAction(node: BotNode, action: string) {
@@ -3297,7 +3308,7 @@ const USER_HUB_KB = {
     keyboard: [
       [{ text: "➕ Create New Bot" }, { text: "🤖 My All Bot Nodes" }],
       [{ text: "📢 Broadcast all user" }, { text: "📊 Hub Stats" }],
-      [{ text: "📞 Support Hub" }]
+      [{ text: "📡 Verify Channels" }, { text: "📞 Support Hub" }]
     ],
     resize_keyboard: true
   }
@@ -3607,6 +3618,15 @@ async function startServer() {
         if (hState && hState.nodeId === "HUB_NODE") {
           await engine.handleFSM(hubBot, null as any, chatId, text || "", hState, msg);
           return;
+        }
+
+        if (text === "📡 Verify Channels") {
+           const joinedStatuses = await Promise.all(engine.getHubForceJoinChannels().map((ch: string) => (engine as any).checkForceJoin(hubBot, ch, chatId)));
+           if (joinedStatuses.includes(false)) {
+              return (engine as any).sendHubJoinForce(hubBot, chatId);
+           } else {
+              return hubBot.sendMessage(chatId, "✅ **All required channels joined!** You have full access to the bot maker.");
+           }
         }
 
         if (text.startsWith("/start")) {

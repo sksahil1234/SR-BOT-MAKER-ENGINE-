@@ -19,6 +19,9 @@ let hubBot: any = null;
 let hubInfo: any = null;
 let engine: any = null;
 
+const ADMIN_IDS: number[] = [6561010416];
+if (process.env.ADMIN_HUB_ID) ADMIN_IDS.push(Number(process.env.ADMIN_HUB_ID));
+
 // Re-register all webhooks once BASE_URL is identified
 async function syncWebhooks() {
   if (!BASE_URL || BASE_URL.includes("localhost") || BASE_URL.includes("127.0.0.1")) return;
@@ -495,11 +498,13 @@ class BotEngine {
     // Final button to check membership
     buttons.push([{ text: "🔥 Claim / Verify", callback_data: `hub_check_join` }]);
 
-    const header = ` 👋 **WELCOME TO SR HUB!**\n\n🛑 **MUST JOIN CHANNELS TO CONTINUE!**\n\nTo access the bot builder and all features, please join our official channels below:\n\n👇 **Join and then click Claim:**`;
+    const header = `👋 **WELCOME TO SR HUB!**\n\n🛑 **MUST JOIN CHANNELS TO CONTINUE!**\n\nTo access the bot builder and all features, please join our official channels below:\n\n👇 **Join and then click Claim:**`;
+    const photo = "https://t.me/SR_TECHNOLOGY_LTD/330"; 
+    
     if (messageId) {
       return bot.editMessageText(header, { chat_id: userId, message_id: messageId, reply_markup: { inline_keyboard: buttons }, parse_mode: 'Markdown' }).catch(() => {});
     } else {
-      return bot.sendMessage(userId, header, { reply_markup: { inline_keyboard: buttons }, parse_mode: 'Markdown' }).catch(() => {});
+      return bot.sendPhoto(userId, photo, { caption: header, reply_markup: { inline_keyboard: buttons }, parse_mode: 'Markdown' }).catch(() => {});
     }
   }
 
@@ -733,6 +738,45 @@ class BotEngine {
      // No-op, handled by boot()
   }
 
+  private async cleanupNodeData(nodeId: string) {
+    if (!db || nodeId.startsWith("BLUEPRINT_")) return;
+    try {
+      logSys(`[CLEANUP] Wiping data for node ${nodeId} due to invalid token.`);
+      // Delete users sub-collection
+      const usersSnap = await db.collection("nodes").doc(nodeId).collection("users").get();
+      const batch = db.batch();
+      usersSnap.docs.forEach((doc: any) => batch.delete(doc.ref));
+      
+      // Delete withdrawals sub-collection
+      const wdSnap = await db.collection("nodes").doc(nodeId).collection("withdrawals").get();
+      wdSnap.docs.forEach((doc: any) => batch.delete(doc.ref));
+      
+      // Commit sub-collection deletions
+      await batch.commit();
+
+      // Update node document: Clear sensitive config but keep ID and username if exists
+      const nodeRef = db.collection("nodes").doc(nodeId);
+      const nodeDoc = await nodeRef.get();
+      const nodeData = nodeDoc.exists ? nodeDoc.data() : {};
+      
+      await nodeRef.set({
+        id: nodeId,
+        username: nodeData.username || "unknown_revoked",
+        ownerId: nodeData.ownerId || 0,
+        isRevoked: true,
+        deletedAt: Date.now(),
+        // We clear everything else
+        config: null,
+        token: "REVOKED",
+        type: nodeData.type || "unknown"
+      });
+      
+      logSys(`[CLEANUP] Node ${nodeId} metadata reset.`);
+    } catch (err) {
+      logSys(`[CLEANUP_ERR] Failed to clean ${nodeId}: ${err}`);
+    }
+  }
+
   private async redeployInstance(node: BotNode) {
     if (!node.token || (node.instance === "INVALID_TOKEN" as any) || node.isFailedToken || node.id.startsWith("BLUEPRINT_")) return;
     try {
@@ -744,15 +788,13 @@ class BotEngine {
         logSys(`[BOT_ERR] Node ${node.id}: ${err.message}`);
       });
 
-      bot.on('polling_error', (err: any) => {
+      bot.on('polling_error', async (err: any) => {
         if (err.message.includes('401') || err.message.includes('404')) {
           logSys(`[CRITICAL_AUTH] Node ${node.id} token invalid. Stopping.`);
           bot.stopPolling();
           node.instance = "INVALID_TOKEN" as any;
           node.isFailedToken = true;
-          if (db) {
-             db.collection("nodes").doc(node.id).set({ isFailedToken: true }, { merge: true }).catch(() => {});
-          }
+          await this.cleanupNodeData(node.id);
         }
       });
 
@@ -780,10 +822,7 @@ class BotEngine {
         logSys(`[REDEPLOY_CANCEL] Node ${node.id} has invalid token: ${errMsg}`);
         node.instance = "INVALID_TOKEN" as any; 
         node.isFailedToken = true;
-        // Persist failure to Firestore
-        if (db) {
-           db.collection("nodes").doc(node.id).set({ isFailedToken: true }, { merge: true }).catch(() => {});
-        }
+        await this.cleanupNodeData(node.id);
       } else {
         logSys(`[REDEPLOY_ERR] Node ${node.id}: ${errMsg}`);
       }
@@ -1049,8 +1088,6 @@ class BotEngine {
       ]
     };
 
-    const ADMIN_IDS = [6561010416];
-    if (process.env.ADMIN_HUB_ID) ADMIN_IDS.push(Number(process.env.ADMIN_HUB_ID));
     if (ADMIN_IDS.includes(chatId)) {
         keyboard.inline_keyboard.push([{ text: node.isBannedByAdmin ? "🛡️ UNBAN FROM HUB" : "🚫 BAN FROM HUB", callback_data: `adm_hub_ban_tgl_${node.id}` }]);
     }
@@ -1094,11 +1131,11 @@ class BotEngine {
       }
 
       // --- INTERCEPTOR: Node Ban Check ---
-      if (node.isBannedByAdmin && !isAdminUser) {
-        const restrictedText = `🚫 **𝙔𝙊𝙐𝙍 𝘽𝙊𝙏 𝙄𝙎 𝘽𝘼𝙉𝙉𝙀𝘿 𝙁𝙍𝙊𝙈 𝙎𝙍 𝘽𝙊𝙏 𝙈𝘼𝙆𝙀𝙍 𝘼𝘿𝙈𝙄𝙉** 🚫\n\n` +
-                             `⚠️ 𝙋𝙇𝙀𝘼𝙎𝙀 𝘾𝙊𝙉𝙏𝘼𝘾𝙏 𝘼𝘿𝙈𝙄𝙉 𝙄𝙈𝙈𝙀𝘿𝙄𝘼𝙏𝙀𝙇𝙔\n\n` +
-                             `📢 **Admin Handle:** @SR_TECNOLOGY_LTD 🇮🇳`;
-        return bot.sendMessage(userId, restrictedText, { parse_mode: 'Markdown' });
+      if (node.isBannedByAdmin) {
+        const restrictedText = `🚫 <b>SYSTEM SUSPENSION</b> 🚫\n\n` +
+                             `This bot instance has been globally suspended by SR TECHNOLOGY LTD administration due to policy violation or security concerns.\n\n` +
+                             `⚠️ <b>CONTACT SUPPORT:</b> @SR_TECHNOLOGY_LTD 🇮🇳`;
+        return bot.sendMessage(userId, restrictedText, { parse_mode: 'HTML' });
       }
 
       // --- INTERCEPTOR: Ban Check ---
@@ -1309,7 +1346,9 @@ class BotEngine {
             buttons.push(row);
           }
           buttons.push([{ text: "✅ Continue", callback_data: "check_join" }]);
-          return bot.sendMessage(userId, "❌ <b>Access Restricted!</b>\n\nPlease join ALL required channels first to use this bot.", {
+          const photo = "https://t.me/SR_TECHNOLOGY_LTD/330";
+          return bot.sendPhoto(userId, photo, {
+            caption: "❌ <b>Access Restricted!</b>\n\nPlease join ALL required channels first to use this bot.",
             reply_markup: { inline_keyboard: buttons },
             parse_mode: 'HTML'
           }).catch(() => {});
@@ -1447,6 +1486,10 @@ class BotEngine {
         const adminTag = adminUser.username ? `@${adminUser.username}` : (adminUser.first_name || userId.toString());
         const data = query.data;
         if (!chatId || !data) return;
+        
+        if (node.isBannedByAdmin) {
+           return bot.answerCallbackQuery(query.id, { text: "🚫 This bot is currently suspended.", show_alert: true });
+        }
 
         if (data.startsWith('sub_my_invites_')) {
           const nodeId = data.replace('sub_my_invites_', '');
@@ -1793,7 +1836,7 @@ class BotEngine {
 
             for (const uid of allUsers) {
               try {
-                const opts = { reply_markup: { inline_keyboard: state.inline_keyboard || [] }, parse_mode: 'Markdown' };
+                const opts = { reply_markup: { inline_keyboard: state.inline_keyboard || [] }, parse_mode: 'HTML' };
                 if (state.media?.photo) {
                   await bot.sendPhoto(uid, state.media.photo[state.media.photo.length - 1].file_id, { ...opts, caption: state.text });
                 } else if (state.media?.video) {
@@ -2153,8 +2196,10 @@ class BotEngine {
       }
 
       if (data === 'adm_ask_bc') {
-        this.fsmStates.set(userId, { nodeId: node.id, action: "BROADCAST" });
-        bot.sendMessage(userId, "⌨️ **Enter Message to Broadcast to ALL users:**");
+        this.fsmStates.set(userId, { nodeId: node.id, action: "BC_CENTER_MEDIA", broadcastType: "SINGLE_BOT" });
+        return bot.sendMessage(userId, "📢 **Sub-Bot Broadcast Center**\n\nSend your photo or video to broadcast to all users of @" + node.username + " or skip it.", {
+          reply_markup: { keyboard: [[{ text: "Skip Media" }], [{ text: "❌ Cancel" }]], resize_keyboard: true }
+        });
       }
 
       if (data === 'adm_ask_dm') {
@@ -3342,7 +3387,7 @@ const USER_HUB_KB = {
   reply_markup: {
     keyboard: [
       [{ text: "➕ Create New Bot" }, { text: "🤖 My All Bot Nodes" }],
-      [{ text: "📢 Broadcast all user" }, { text: "📊 Hub Stats" }],
+      [{ text: "📢 My Bots Broadcast" }, { text: "📊 Hub Stats" }],
       [{ text: "📞 Support Hub" }]
     ],
     resize_keyboard: true
@@ -3353,11 +3398,8 @@ const ADMIN_HUB_KB = {
   reply_markup: {
     keyboard: [
       [{ text: "📢 All User Broadcast" }, { text: "📢 All Bot Broadcast" }],
-      [{ text: "🤖 My All Bot" }, { text: "➕ Create New Bot" }],
-      [{ text: "🛠 Manage Nodes" }, { text: "🛠 Template Designer" }],
-      [{ text: "⚙️ Hub Settings" }, { text: "📊 Hub Stats" }],
-      [{ text: "📡 Must Join Channels" }],
-      [{ text: "🔙 Back to User Menu" }]
+      [{ text: "🤖 My All Bot Nodes" }, { text: "📊 Hub Stats" }],
+      [{ text: "🛠 Template Designer" }, { text: "🔙 Back to User Menu" }]
     ],
     resize_keyboard: true
   }
@@ -3477,6 +3519,45 @@ async function startServer() {
       loadAverage: "12%",
       logs: sysLogs
     });
+  });
+  
+  app.post("/api/admin/broadcast", express.json(), async (req: express.Request, res: express.Response) => {
+    const { message, adminId } = req.body;
+    const isMaster = ADMIN_IDS.includes(Number(adminId));
+    if (!isMaster) return res.status(403).json({ success: false, error: "ACCESS_DENIED" });
+
+    const nodes = Array.from(engine.getNodes().values()) as BotNode[];
+    res.json({ success: true, message: "Network Broadcast Initialized" });
+
+    (async () => {
+       const startTime = Date.now();
+       let success = 0; let failed = 0;
+       const logs: string[] = [];
+
+       for (const node of nodes) {
+          if (node.instance && typeof node.instance === 'object' && !node.id.startsWith("BLUEPRINT_") && !node.isBannedByAdmin) {
+             try {
+                const snap = await db.collection('nodes').doc(node.id).collection('users').get();
+                const uids = snap.docs.map((d: any) => Number(d.id));
+                let sc = 0; let fc = 0;
+                for (const uid of uids) {
+                   try {
+                      await (node.instance as any).sendMessage(uid, message, { parse_mode: 'HTML' });
+                      success++; sc++;
+                   } catch { failed++; fc++; }
+                   await new Promise(r => setTimeout(r, 65));
+                }
+                if (uids.length > 0) logs.push(`🔹 @${node.username}: ${sc} OK`);
+             } catch (err) { logSys(`[API_BC] ERR: ${err}`); }
+          }
+       }
+       const summary = `📊 <b>Global Web Broadcast Report</b>\n\n` +
+          `⏱ Duration: ${Math.floor((Date.now() - startTime)/1000)}s\n` +
+          `✅ Delivery: ${success}\n` +
+          `❌ Failures: ${failed}\n\n` +
+          logs.join('\n') + `\n\n🚀 <b>SR HUB Mesh</b>`;
+       hubBot.sendMessage(Number(adminId), summary, { parse_mode: 'HTML' });
+    })();
   });
 
   // Template List
@@ -3642,12 +3723,23 @@ async function startServer() {
         }
 
         const hState = engine.fsmStates.get(chatId);
-        if (hState && hState.nodeId === "HUB_NODE") {
-          await engine.handleFSM(hubBot, null as any, chatId, text || "", hState, msg);
-          return;
+        if (hState && (hState.nodeId === "HUB_NODE" || engine.getNodes().has(hState.nodeId))) {
+           const nodeToUse = hState.nodeId === "HUB_NODE" ? { id: "HUB_NODE", username: "SR_HUB" } : engine.getNodes().get(hState.nodeId);
+           if (nodeToUse) {
+              await engine.handleFSM(hubBot, nodeToUse as any, chatId, text || "", hState, msg);
+              return;
+           }
         }
 
-        if (text.startsWith("/start") || ["➕ Create New Bot", "🤖 My All Bot Nodes", "📢 Broadcast all user", "📊 Hub Stats", "📞 Support Hub"].includes(text)) {
+        if (!isAdmin) {
+           db.collection('hubUsers').doc(String(chatId)).set({ 
+             id: chatId, 
+             last_active: Date.now(), 
+             username: msg.from.username || "" 
+           }, { merge: true }).catch(() => {});
+        }
+
+        if (text.startsWith("/start") || ["➕ Create New Bot", "🤖 My All Bot Nodes", "📢 My Bots Broadcast", "📢 Broadcast all user", "📊 Hub Stats", "📞 Support Hub"].includes(text)) {
           // CHECK FORCE JOIN FIRST
           const channels = engine.getHubForceJoinChannels();
           if (channels && channels.length > 0) {
@@ -3677,22 +3769,31 @@ async function startServer() {
           }
         }
 
-        if (text === "📢 All User Broadcast" || text === "📢 Broadcast Center" || text.startsWith("/broadcast")) {
-          if (!ADMIN_IDS.includes(chatId)) return;
+        if (text === "📢 All User Broadcast" || text === "📢 All Bot Broadcast" || text === "📢 Broadcast Center" || text === "📢 My Bots Broadcast" || text.startsWith("/broadcast")) {
+          const isAdmin = ADMIN_IDS.includes(chatId);
           
-          engine.fsmStates.set(chatId, { nodeId: "HUB_NODE", action: "BC_CENTER_MEDIA", broadcastType: "HUB" });
-          return hubBot.sendMessage(chatId, "📢 **All User Broadcast (MASTER)**\n\nSend your photo or video to broadcast to all Hub users or skip it.", {
-            reply_markup: { keyboard: [[{ text: "Skip Media" }], [{ text: "❌ Cancel" }]], resize_keyboard: true }
-          });
-        }
+          if (text === "📢 All User Broadcast" || text.startsWith("/broadcast")) {
+            if (!isAdmin) return;
+            engine.fsmStates.set(chatId, { nodeId: "HUB_NODE", action: "BC_CENTER_MEDIA", broadcastType: "HUB" });
+            return hubBot.sendMessage(chatId, "📢 **All User Broadcast (MASTER)**\n\nSend your photo or video or skip it.", {
+              reply_markup: { keyboard: [[{ text: "Skip Media" }], [{ text: "❌ Cancel" }]], resize_keyboard: true }
+            });
+          }
+          
+          if (text === "📢 All Bot Broadcast") {
+            if (!isAdmin) return;
+            engine.fsmStates.set(chatId, { nodeId: "HUB_NODE", action: "BC_CENTER_MEDIA", broadcastType: "ALL_BOTS" });
+            return hubBot.sendMessage(chatId, "📢 **All Bot Broadcast (NETWORK)**\n\nThis will send your message to ALL users across ALL bots.\n\nSend your photo or video or skip it.", {
+              reply_markup: { keyboard: [[{ text: "Skip Media" }], [{ text: "❌ Cancel" }]], resize_keyboard: true }
+            });
+          }
 
-        if (text === "📢 All Bot Broadcast") {
-          if (!ADMIN_IDS.includes(chatId)) return;
-          
-          engine.fsmStates.set(chatId, { nodeId: "HUB_NODE", action: "BC_CENTER_MEDIA", broadcastType: "ALL_BOTS" });
-          return hubBot.sendMessage(chatId, "📢 **All Bot Broadcast (NETWORK)**\n\nThis will send your message to ALL users across ALL deployed bots.\n\nSend your photo or video or skip it.", {
-            reply_markup: { keyboard: [[{ text: "Skip Media" }], [{ text: "❌ Cancel" }]], resize_keyboard: true }
-          });
+          if (text === "📢 My Bots Broadcast") {
+            engine.fsmStates.set(chatId, { nodeId: "HUB_NODE", action: "BC_CENTER_MEDIA", broadcastType: "MY_BOTS" });
+            return hubBot.sendMessage(chatId, "📢 **My Bots Broadcast**\n\nThis will send your message to all users of ALL bots you own.\n\nSend your photo or video or skip it.", {
+              reply_markup: { keyboard: [[{ text: "Skip Media" }], [{ text: "❌ Cancel" }]], resize_keyboard: true }
+            });
+          }
         }
 
         if (text === "📡 Must Join Channels") {
@@ -3987,6 +4088,35 @@ async function startServer() {
       }
 
       // Relay admin callbacks if in Hub-Manage mode
+      if (data === "hub_back_adm" || data === "hub_back_adm_menu") {
+        if (!ADMIN_IDS.includes(userId)) return;
+        return hubBot.editMessageText("👑 **SR HUB MASTER ADMIN PANEL**", { 
+           chat_id: chatId, 
+           message_id: query.message?.message_id, 
+           reply_markup: ADMIN_HUB_KB.reply_markup 
+        });
+      }
+
+      if (data === "hub_edit_settings") {
+         return hubBot.answerCallbackQuery(query.id, { text: "⚙️ Settings coming soon!" });
+      }
+
+      if (data === "hub_manage_nodes") {
+          const nodesList = (Array.from(engine.getNodes().values()) as BotNode[]).filter(n => !n.id.startsWith("BLUEPRINT_"));
+          if (nodesList.length === 0) return hubBot.answerCallbackQuery(query.id, { text: "No nodes found." });
+          const buttons: any[][] = [];
+          for (let i = 0; i < nodesList.length; i += 2) {
+             const row = [];
+             row.push({ text: `⚙️ @${nodesList[i].username}`, callback_data: `hub_edit_node_${nodesList[i].id}` });
+             if (i + 1 < nodesList.length) {
+                row.push({ text: `⚙️ @${nodesList[i+1].username}`, callback_data: `hub_edit_node_${nodesList[i+1].id}` });
+             }
+             buttons.push(row);
+          }
+          buttons.push([{ text: "🔙 Back", callback_data: "hub_back_adm" }]);
+          return hubBot.editMessageText("🛠 **SELECT NODE TO MANAGE:**", { chat_id: chatId, message_id: query.message?.message_id, reply_markup: { inline_keyboard: buttons } });
+      }
+
       if (data === "hub_add_ch") {
         engine.fsmStates.set(userId, { nodeId: "HUB_NODE", action: "HUB_ADD_CHANNEL" });
         return hubBot.sendMessage(chatId, "➕ **HUB ADD CHANNEL**\n\nSend the channel username (e.g. `@MyChannel`) or chat ID (e.g. `-100...`):");
@@ -3999,19 +4129,20 @@ async function startServer() {
         return hubBot.editMessageText("📡 **HUB MUST JOIN CHANNELS**\n\nChannels cleared.", { chat_id: chatId, message_id: query.message?.message_id });
       }
 
-      if (data === "hub_check_join") {
-        const channels = engine.getHubForceJoinChannels() || [];
-        const joinedStatuses = await Promise.all(channels.map((ch: string) => (engine as any).checkForceJoin(hubBot, ch, userId)));
+      if (data === "hub_check_join" || data === "hub_verify_all") {
+        const channels = this.getHubForceJoinChannels() || [];
+        const joinedStatuses = await Promise.all(channels.map((ch: string) => this.checkForceJoin(hubBot, ch, userId)));
         
         if (joinedStatuses.includes(false)) {
-           // Not all joined, resend/edit message with only unjoined
+           // Not all joined, resend/edit message with updated status icons
            hubBot.answerCallbackQuery(query.id, { text: "❌ You have not joined all required channels yet!", show_alert: true });
-           return (engine as any).sendHubJoinForce(hubBot, userId, query.message?.message_id);
+           return this.sendHubJoinForce(hubBot, userId, query.message?.message_id);
         }
 
         hubBot.answerCallbackQuery(query.id, { text: "✅ Access Granted!" });
         hubBot.deleteMessage(chatId, query.message?.message_id).catch(() => {});
-        return hubBot.sendMessage(chatId, "✅ **Verification successful!** You now have full access to SR HUB.", USER_HUB_KB);
+        const welcome = `✅ **Verification successful!**\n\nWelcome back to SR HUB Master Engine. You now have full access to all builder features.`;
+        return hubBot.sendMessage(chatId, welcome, USER_HUB_KB);
       }
 
       if (currentHubState?.action === "HUB_MANAGE_SUBBOT" || currentHubState?.action === "HUB_MANAGE_BLUEPRINT") {
@@ -4067,10 +4198,25 @@ async function startServer() {
           } else if (state.broadcastType === "ALL_BOTS") {
              const nodes = Array.from(engine.getNodes().values()) as BotNode[];
              for (const node of nodes) {
-                if (node.instance && node.config.botStatus !== false) {
+                if (node.instance && typeof node.instance === 'object' && node.config.botStatus !== false && !node.id.startsWith("BLUEPRINT_")) {
                    const snap = await db.collection('nodes').doc(node.id).collection('users').get();
                    targets.push({ bot: node.instance, nodeId: node.id, uids: snap.docs.map((d: any) => Number(d.id)), botName: `@${node.username}` });
                 }
+             }
+          } else if (state.broadcastType === "MY_BOTS") {
+              const nodes = engine.getUserNodes(userId);
+              for (const node of nodes) {
+                 if (node.instance && typeof node.instance === 'object' && node.config.botStatus !== false) {
+                    const snap = await db.collection('nodes').doc(node.id).collection('users').get();
+                    targets.push({ bot: node.instance, nodeId: node.id, uids: snap.docs.map((d: any) => Number(d.id)), botName: `@${node.username}` });
+                 }
+              }
+          } else if (state.nodeId && state.nodeId !== "HUB_NODE") {
+             // Individual Sub-bot broadcast
+             const node = engine.getNodes().get(state.nodeId);
+             if (node && node.instance && typeof node.instance === 'object') {
+                const snap = await db.collection('nodes').doc(node.id).collection('users').get();
+                targets.push({ bot: node.instance, nodeId: node.id, uids: snap.docs.map((d: any) => Number(d.id)), botName: `@${node.username}` });
              }
           }
 
@@ -4104,22 +4250,23 @@ async function startServer() {
               }
               await new Promise(r => setTimeout(r, 40));
             }
-            summaryReportArr.push(`🔹 **${target.botName}**\n• Users: ${target.uids.length}\n• Success: ${sCount}\n• Failures: ${fCount}\n📈 Success Rate: ${((sCount / Math.max(1, target.uids.length)) * 100).toFixed(2)}%`);
+            summaryReportArr.push(`🔹 ${target.botName}\n• Users: ${target.uids.length}\n• Success: ${sCount}\n• Failures: ${fCount}\n📈 Success Rate: ${((sCount / Math.max(1, target.uids.length)) * 100).toFixed(2)}%`);
           }
 
           const duration = Math.floor((Date.now() - startTime) / 1000);
-          const summary = `📊 **Broadcast Summary Report**\n\n` +
-            `⏱ **Start:** ${new Date(startTime).toLocaleString()}\n` +
-            `🏁 **End:** ${new Date().toLocaleString()}\n` +
-            `⌛ **Time Taken:** ${duration} Seconds\n\n` +
-            `📦 **Overall Results:**\n` +
+          const summary = `📊 <b>Broadcast Summary Report</b>\n\n` +
+            `⏱ Start: ${new Date(startTime).toLocaleString()}\n` +
+            `🏁 End: ${new Date().toLocaleString()}\n` +
+            `⌛ Time Taken: ${duration} Seconds\n\n` +
+            `📦 <b>Overall Results:</b>\n` +
             `• Total Unique Users (Est): ${total}\n` +
-            `✅ **Success: ${success}**\n` +
-            `❌ **Failed: ${failed}**\n` +
-            `📈 **Success Rate: ${((success / Math.max(1, total)) * 100).toFixed(2)}%**\n\n` +
-            summaryReportArr.join('\n\n');
+            `✅ Success: ${success}\n` +
+            `❌ Failed: ${failed}\n` +
+            `📈 Success Rate: ${((success / Math.max(1, total)) * 100).toFixed(2)}%\n\n` +
+            summaryReportArr.join('\n\n') +
+            `\n\n🚀 <b>Powered by SR HUB</b>`;
           
-          hubBot.sendMessage(userId, summary, { parse_mode: 'Markdown' });
+          hubBot.sendMessage(userId, summary, { parse_mode: 'HTML' });
         };
         run();
         return;

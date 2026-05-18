@@ -73,9 +73,33 @@ function MainDashboard() {
   const [initialSync, setInitialSync] = useState(true);
   const [templates, setTemplates] = useState<any[]>([]);
   const [nodes, setNodes] = useState<any[]>([]);
-  const [activeTab, setActiveTab] = useState<'monitor' | 'templates' | 'manage'>('monitor');
+  const [activeTab, setActiveTab] = useState<'monitor' | 'templates' | 'manage' | 'broadcast'>('monitor');
   const [selectedNode, setSelectedNode] = useState<string>("");
   const [updatingNode, setUpdatingNode] = useState(false);
+  const [bcMessage, setBcMessage] = useState("");
+  const [sendingBc, setSendingBc] = useState(false);
+
+  const sendGlobalBroadcast = async () => {
+     if (!bcMessage) return alert("Please enter message");
+     if (!window.confirm("ARE YOU SURE? This will send a message HELP to ALL users across ALL bots!")) return;
+     
+     setSendingBc(true);
+     try {
+       const res = await fetch('/api/admin/broadcast', {
+         method: 'POST',
+         headers: { 'Content-Type': 'application/json' },
+         body: JSON.stringify({ message: bcMessage, adminId: 6561010416 }) // Master Admin
+       });
+       if (res.ok) {
+         alert("🚀 Network Broadcast Initialized! Check Master Bot for the final report.");
+         setBcMessage("");
+       }
+     } catch (e) {
+       alert("Network synchronization error.");
+     } finally {
+       setSendingBc(false);
+     }
+  };
 
   useEffect(() => {
     const fetchTemplates = async () => {
@@ -230,6 +254,12 @@ function MainDashboard() {
                 className={`text-[9px] font-black uppercase tracking-widest ${activeTab === 'manage' ? 'text-orange-600' : 'text-gray-500'} hover:text-orange-600 transition-colors`}
               >
                 Manage Nodes
+              </button>
+              <button 
+                onClick={() => setActiveTab('broadcast')}
+                className={`text-[9px] font-black uppercase tracking-widest ${activeTab === 'broadcast' ? 'text-orange-600' : 'text-gray-500'} hover:text-orange-600 transition-colors`}
+              >
+                Global Broadcast
               </button>
             </div>
 
@@ -428,6 +458,58 @@ function MainDashboard() {
                   </div>
                 ))
               )}
+            </div>
+          </div>
+        </section>
+      )}
+
+      {activeTab === 'broadcast' && (
+        <section className="py-32 px-8 bg-[#020406]">
+          <div className="max-w-4xl mx-auto">
+            <header className="mb-20 text-center">
+              <div className="inline-flex items-center gap-3 px-4 py-2 bg-orange-600/10 border border-orange-600/20 mb-6">
+                <Globe className="w-4 h-4 text-orange-600 animate-spin" />
+                <span className="text-[10px] font-black text-orange-600 tracking-[0.3em] uppercase">Network Payload Center</span>
+              </div>
+              <h2 className="text-6xl font-black italic uppercase tracking-tighter mb-4">Global Broadcast</h2>
+              <p className="text-gray-500">Inject a message across the entire SR Mesh network. Every user of every active node will receive this payload.</p>
+            </header>
+
+            <div className={`p-12 border ${THEME.border} ${THEME.card} shadow-2xl`}>
+              <div className="mb-8 flex items-center justify-between border-b border-white/5 pb-4">
+                <span className="text-[10px] font-mono text-gray-600 uppercase">Input Payload (HTML/Text Supported)</span>
+                <span className="text-[10px] font-mono text-orange-600 animate-pulse">SYSTEM_ID: AUTH_ADMIN</span>
+              </div>
+              
+              <textarea 
+                value={bcMessage}
+                onChange={(e) => setBcMessage(e.target.value)}
+                placeholder="<b>Broadcast Title</b>\n\nMessage content goes here..."
+                className="w-full h-64 bg-black/50 border border-white/5 p-8 text-sm font-mono text-gray-300 focus:border-orange-600 outline-none transition-all resize-none mb-8"
+              />
+
+              <div className="flex flex-col md:flex-row items-center gap-8">
+                <button 
+                  onClick={sendGlobalBroadcast}
+                  disabled={sendingBc || !bcMessage}
+                  className={`flex-1 w-full py-6 flex items-center justify-center gap-4 ${sendingBc ? 'bg-gray-800' : 'bg-orange-600'} text-black font-black uppercase tracking-widest hover:brightness-110 active:scale-95 transition-all disabled:opacity-30`}
+                >
+                  {sendingBc ? (
+                    <>
+                      <div className="w-4 h-4 border-2 border-black border-t-transparent rounded-full animate-spin" />
+                      Uploading Payload...
+                    </>
+                  ) : (
+                    <>
+                      <Zap className="w-5 h-5 fill-black" />
+                      Engage Network Broadcast
+                    </>
+                  )}
+                </button>
+                <div className="text-[9px] font-mono text-gray-600 uppercase leading-relaxed max-w-[200px]">
+                  * This process is asynchronous. A final report will be sent to the Master Bot Admin.
+                </div>
+              </div>
             </div>
           </div>
         </section>

@@ -477,20 +477,19 @@ class BotEngine {
     const allChannels = this.hubForceJoinChannels || [];
     if (allChannels.length === 0) return;
 
-    // We check which ones are NOT joined to show only those
     const checks = await Promise.all(allChannels.map(ch => this.checkForceJoin(bot, ch, userId)));
-    const unjoinedIndices = checks.map((joined, i) => joined ? -1 : i).filter(idx => idx !== -1);
+    const allJoined = !checks.includes(false);
 
-    if (unjoinedIndices.length === 0) {
+    if (allJoined && !messageId) {
        // Everything joined, just send start dashboard
        return bot.sendMessage(userId, "✅ **All channels joined!** Use /start to open the dashboard.");
     }
 
     const buttons = [];
-    for (let k = 0; k < unjoinedIndices.length; k++) {
-       const idx = unjoinedIndices[k];
-       const ch = allChannels[idx];
-       buttons.push([{ text: `✅ Joined Channel ${idx + 1}`, url: this.formatChannelLink(ch) }]);
+    for (let i = 0; i < allChannels.length; i++) {
+       const isJoined = checks[i];
+       const textIcon = isJoined ? "✅ Joined" : "➕ Join";
+       buttons.push([{ text: `${textIcon} Channel ${i + 1}`, url: this.formatChannelLink(allChannels[i]) }]);
     }
     
     // Final button to check membership

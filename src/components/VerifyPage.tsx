@@ -42,17 +42,24 @@ export default function VerifyPage() {
 
   const handleFinalize = async () => {
     try {
-      const res = await fetch('/api/verify-device', {
+      // Generate a persistent device ID if not exists
+      let deviceId = localStorage.getItem('sr_device_uid');
+      if (!deviceId) {
+        deviceId = 'DEV-' + Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
+        localStorage.setItem('sr_device_uid', deviceId);
+      }
+
+      const res = await fetch('/api/verify', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ nodeId, userId, ref: refId })
+        body: JSON.stringify({ nodeId, userId, refId, deviceId })
       });
       const data = await res.json();
       if (data.success) {
         setStep('success');
       } else {
         setStep('fail');
-        setReason(data.reason || "Duplicate device detected.");
+        setReason(data.reason || (data.duplicate ? "Duplicate device detected." : "Verification failed."));
       }
     } catch (e) {
       setStep('fail');

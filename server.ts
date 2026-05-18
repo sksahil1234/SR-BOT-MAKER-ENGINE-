@@ -321,6 +321,7 @@ interface BotNode {
   theme: string;
   createdAt: number;
   isBannedByAdmin?: boolean;
+  isFailedToken?: boolean;
   config: SubBotConfig;
   users: Map<number, UserProfile>;
   pendingWithdrawals: Map<string, { userId: number, amount: number, wallet: string, createdAt: number }>;
@@ -473,22 +474,29 @@ class BotEngine {
   }
 
   private async sendHubJoinForce(bot: any, userId: number, messageId?: number) {
-    const buttons = [];
-    const chList = [...(this.hubForceJoinChannels || [])];
-    for (let i = 0; i < chList.length; i += 2) {
-       const row = [];
-       const ch1 = chList[i];
-       row.push({ text: `➕ Channel ${i+1}`, url: this.formatChannelLink(ch1) });
+    const allChannels = this.hubForceJoinChannels || [];
+    if (allChannels.length === 0) return;
 
-       if (i + 1 < chList.length) {
-          const ch2 = chList[i + 1];
-          row.push({ text: `➕ Channel ${i+2}`, url: this.formatChannelLink(ch2) });
-       }
-       buttons.push(row);
+    // We check which ones are NOT joined to show only those
+    const checks = await Promise.all(allChannels.map(ch => this.checkForceJoin(bot, ch, userId)));
+    const unjoinedIndices = checks.map((joined, i) => joined ? -1 : i).filter(idx => idx !== -1);
+
+    if (unjoinedIndices.length === 0) {
+       // Everything joined, just send start dashboard
+       return bot.sendMessage(userId, "✅ **All channels joined!** Use /start to open the dashboard.");
     }
-    buttons.push([{ text: "✅ Check Membership", callback_data: `hub_check_join` }]);
 
-    const header = `👋 **WELCOME TO SR HUB!**\n\n🛑 **MUST JOIN CHANNELS TO CONTINUE!**\n\nYou must be a subscriber of These channels to use the bot maker.`;
+    const buttons = [];
+    for (let k = 0; k < unjoinedIndices.length; k++) {
+       const idx = unjoinedIndices[k];
+       const ch = allChannels[idx];
+       buttons.push([{ text: `✅ Joined Channel ${idx + 1}`, url: this.formatChannelLink(ch) }]);
+    }
+    
+    // Final button to check membership
+    buttons.push([{ text: "🔥 Claim / Verify", callback_data: `hub_check_join` }]);
+
+    const header = ` 👋 **WELCOME TO SR HUB!**\n\n🛑 **MUST JOIN CHANNELS TO CONTINUE!**\n\nTo access the bot builder and all features, please join our official channels below:\n\n👇 **Join and then click Claim:**`;
     if (messageId) {
       return bot.editMessageText(header, { chat_id: userId, message_id: messageId, reply_markup: { inline_keyboard: buttons }, parse_mode: 'Markdown' }).catch(() => {});
     } else {
@@ -600,7 +608,8 @@ class BotEngine {
           users: new Map(),
           pendingWithdrawals: new Map(Object.entries(data.pendingWithdrawals || {})),
           withdrawals: data.withdrawals || [],
-          instance: null
+          instance: null,
+          isFailedToken: data.isFailedToken || false
         } as any;
 
         this.nodes.set(node.id, node);
@@ -610,8 +619,10 @@ class BotEngine {
         this.userToNodes.set(node.ownerId, userNodeList);
 
         nodeCount++;
-        // Async redeploy with a much faster stagger for performance
-        setTimeout(() => this.redeployInstance(node), nodeCount * 50);
+        // Async redeploy with a much faster stagger for performance, skip blueprints
+        if (!node.id.startsWith("BLUEPRINT_")) {
+          setTimeout(() => this.redeployInstance(node), nodeCount * 50);
+        }
       }
       logSys(`Firestore hydrated: ${nodeCount} nodes configurations loaded.`);
     } catch (err: any) {
@@ -702,7 +713,7 @@ class BotEngine {
       this.nodes.forEach(async (node) => {
         try {
           // Skip if it's a template node or has an invalid token
-          if (node.id.startsWith("BLUEPRINT_") || node.instance === "INVALID_TOKEN" as any) return;
+          if (node.id.startsWith("BLUEPRINT_") || node.instance === "INVALID_TOKEN" as any || node.isFailedToken) return;
           
           if (!node.instance) {
             logSys(`[MONITOR] Node ${node.id} resetting...`);
@@ -724,7 +735,7 @@ class BotEngine {
   }
 
   private async redeployInstance(node: BotNode) {
-    if (!node.token || (node.instance === "INVALID_TOKEN" as any)) return;
+    if (!node.token || (node.instance === "INVALID_TOKEN" as any) || node.isFailedToken || node.id.startsWith("BLUEPRINT_")) return;
     try {
       const isDev = process.env.NODE_ENV !== 'production';
       const bot = new TelegramBot(node.token, { polling: isDev });
@@ -739,6 +750,10 @@ class BotEngine {
           logSys(`[CRITICAL_AUTH] Node ${node.id} token invalid. Stopping.`);
           bot.stopPolling();
           node.instance = "INVALID_TOKEN" as any;
+          node.isFailedToken = true;
+          if (db) {
+             db.collection("nodes").doc(node.id).set({ isFailedToken: true }, { merge: true }).catch(() => {});
+          }
         }
       });
 
@@ -764,7 +779,12 @@ class BotEngine {
       const errMsg = String(err.message || err.description || "");
       if (errMsg.includes('401') || errMsg.includes('404') || errMsg.includes('Unauthorized') || errMsg.includes('Not Found')) {
         logSys(`[REDEPLOY_CANCEL] Node ${node.id} has invalid token: ${errMsg}`);
-        node.instance = "INVALID_TOKEN" as any; // Persistent marker
+        node.instance = "INVALID_TOKEN" as any; 
+        node.isFailedToken = true;
+        // Persist failure to Firestore
+        if (db) {
+           db.collection("nodes").doc(node.id).set({ isFailedToken: true }, { merge: true }).catch(() => {});
+        }
       } else {
         logSys(`[REDEPLOY_ERR] Node ${node.id}: ${errMsg}`);
       }
@@ -2383,9 +2403,6 @@ class BotEngine {
           finalId = '@' + usernameMatch[1];
         } else if (inviteMatch || joinchatMatch) {
           // Can't check private invite links via standard getChatMember 
-          // unless bot is creator or has specific permissions. 
-          // For now, we allow it to avoid locking out users incorrectly.
-          logSys(`[CHECK_JOIN_BYPASS] Link detected (${finalId}), assuming joined.`);
           return true; 
         }
       }
@@ -2393,11 +2410,12 @@ class BotEngine {
       const member = await bot.getChatMember(finalId, userId);
       return ['member', 'administrator', 'creator'].includes(member.status);
     } catch (err: any) {
-      // If bot is not in channel, getChatMember fails.
-      // We should probably NOT return true if we want to BE strict,
-      // but users often add IDs where the bot IS NOT admin yet.
-      logSys(`[CHECK_JOIN_INFO] ${channelId}: Bot might not be admin there or invalid ID.`);
-      return true; 
+      const msg = err.message || "";
+      if (msg.includes('403') || msg.includes('Forbidden') || msg.includes('chat not found')) {
+         logSys(`[CHECK_JOIN_FAIL] ${channelId}: Bot not admin or chat missing. Bypassing to avoid lock.`);
+         return true;
+      }
+      return false; 
     }
   }
 
@@ -3601,14 +3619,6 @@ async function startServer() {
 
         const isAdmin = ADMIN_IDS.includes(chatId);
         
-        // Intercept: Force Join Check for Hub
-        if (!isAdmin && engine.getHubForceJoinChannels().length > 0) {
-           const joinedStatuses = await Promise.all(engine.getHubForceJoinChannels().map((ch: string) => (engine as any).checkForceJoin(hubBot, ch, chatId)));
-           if (joinedStatuses.includes(false)) {
-              return (engine as any).sendHubJoinForce(hubBot, chatId);
-           }
-        }
-
         if (text === "/myid") {
           return hubBot.sendMessage(chatId, `👤 **YOUR TELEGRAM ID:** \`${chatId}\``, { parse_mode: 'Markdown' });
         }
@@ -3638,7 +3648,7 @@ async function startServer() {
           return;
         }
 
-        if (text.startsWith("/start")) {
+        if (text.startsWith("/start") || ["➕ Create New Bot", "🤖 My All Bot Nodes", "📢 Broadcast all user", "📊 Hub Stats", "📞 Support Hub"].includes(text)) {
           // CHECK FORCE JOIN FIRST
           const channels = engine.getHubForceJoinChannels();
           if (channels && channels.length > 0) {
@@ -3648,7 +3658,8 @@ async function startServer() {
             }
           }
 
-          const user_tag = msg.from.username ? `@${msg.from.username}` : (msg.from.first_name || "User");
+          if (text.startsWith("/start")) {
+             const user_tag = msg.from.username ? `@${msg.from.username}` : (msg.from.first_name || "User");
           
           const welcomeMsg = `WELCOME , ${user_tag}!  SELECT  YOUR BOT TYPE 👇🏻 \n\n` +
             `╔════════════════════════════╗\n` +
@@ -3664,6 +3675,7 @@ async function startServer() {
             parse_mode: 'Markdown',
             reply_markup: USER_HUB_KB.reply_markup
           }).catch(() => {});
+          }
         }
 
         if (text === "📢 All User Broadcast" || text === "📢 Broadcast Center" || text.startsWith("/broadcast")) {
@@ -3991,10 +4003,14 @@ async function startServer() {
       if (data === "hub_check_join") {
         const channels = engine.getHubForceJoinChannels() || [];
         const joinedStatuses = await Promise.all(channels.map((ch: string) => (engine as any).checkForceJoin(hubBot, ch, userId)));
+        
         if (joinedStatuses.includes(false)) {
-           return hubBot.answerCallbackQuery(query.id, { text: "❌ You have not joined all required channels yet!", show_alert: true });
+           // Not all joined, resend/edit message with only unjoined
+           hubBot.answerCallbackQuery(query.id, { text: "❌ You have not joined all required channels yet!", show_alert: true });
+           return (engine as any).sendHubJoinForce(hubBot, userId, query.message?.message_id);
         }
-        hubBot.answerCallbackQuery(query.id);
+
+        hubBot.answerCallbackQuery(query.id, { text: "✅ Access Granted!" });
         hubBot.deleteMessage(chatId, query.message?.message_id).catch(() => {});
         return hubBot.sendMessage(chatId, "✅ **Verification successful!** You now have full access to SR HUB.", USER_HUB_KB);
       }

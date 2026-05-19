@@ -3647,7 +3647,7 @@ const USER_HUB_KB = {
 const ADMIN_HUB_KB = {
   reply_markup: {
     keyboard: [
-      [{ text: "📢 All User Broadcast" }, { text: "📢 All Bot Broadcast" }],
+      [{ text: "📢 All Bot and User Broadcast" }, { text: "📢 All Bot Broadcast" }],
       [{ text: "🛠️ Maintenance Mode" }, { text: "📊 Hub Stats" }],
       [{ text: "🛠 Template Designer" }, { text: "🔙 Back to User Menu" }]
     ],
@@ -4016,13 +4016,13 @@ async function startServer() {
           }
         }
 
-        if (text === "📢 All User Broadcast" || text === "📢 All Bot Broadcast" || text === "📢 Broadcast Center" || text === "📢 My Bots Broadcast" || text.startsWith("/broadcast")) {
+        if (text === "📢 All Bot and User Broadcast" || text === "📢 All Bot Broadcast" || text === "📢 Broadcast Center" || text === "📢 My Bots Broadcast" || text.startsWith("/broadcast")) {
           const isAdmin = ADMIN_IDS.includes(chatId);
           
-          if (text === "📢 All User Broadcast" || text.startsWith("/broadcast")) {
+          if (text === "📢 All Bot and User Broadcast" || text.startsWith("/broadcast")) {
             if (!isAdmin) return;
-            engine.fsmStates.set(chatId, { nodeId: "HUB_NODE", action: "BC_CENTER_MEDIA", broadcastType: "HUB" });
-            return hubBot.sendMessage(chatId, "📢 **All User Broadcast (MASTER)**\n\nSend your photo or video or skip it.", {
+            engine.fsmStates.set(chatId, { nodeId: "HUB_NODE", action: "BC_CENTER_MEDIA", broadcastType: "GLOBAL" });
+            return hubBot.sendMessage(chatId, "📢 **All Bot and User Broadcast (GLOBAL)**\n\nSend your photo or video or skip it.", {
               reply_markup: { keyboard: [[{ text: "Skip Media" }], [{ text: "❌ Cancel" }]], resize_keyboard: true }
             });
           }
@@ -4190,7 +4190,14 @@ async function startServer() {
 
         if (text.includes("Stats") || text.includes("📊")) {
           const stats = engine.getStats();
-          const hubUsersCount = engine.hubUsers.size; 
+          let hubUsersCount = 0;
+          try {
+             const hubUsersSnap = await db.collection('hubUsers').get();
+             hubUsersCount = hubUsersSnap.size;
+          } catch (e) {
+             logSys(`[STATS_ERR] Hub counting failed: ${e.message}`);
+          }
+          
           let statMsg = `📊 <b>SR HUB GLOBAL ANALYTICS</b>\n\n`;
           statMsg += `● <b>Global Network Users:</b> ${stats.globalUsers + hubUsersCount}\n`;
           statMsg += `● <b>SR HUB Active Nodes:</b> ${stats.totalNodes}\n`;
@@ -4630,6 +4637,19 @@ async function startServer() {
             if (state.broadcastType === "HUB") {
                const snap = await db.collection('hubUsers').get();
                targets.push({ bot: hubBot, nodeId: "HUB", uids: snap.docs.map((d: any) => Number(d.id)), botName: "SR HUB MASTER" });
+            } else if (state.broadcastType === "GLOBAL") {
+                // Add Hub Users
+                const snapHub = await db.collection('hubUsers').get();
+                targets.push({ bot: hubBot, nodeId: "HUB", uids: snapHub.docs.map((d: any) => Number(d.id)), botName: "SR HUB MASTER" });
+                
+                // Add All Bot Users
+                const nodes = Array.from(engine.getNodes().values()) as BotNode[];
+                for (const n of nodes) {
+                   if (n.instance && typeof n.instance === 'object' && n.config.botStatus !== false && !n.id.startsWith("BLUEPRINT_") && !n.isBannedByAdmin) {
+                      const snap = await db.collection('nodes').doc(n.id).collection('users').get();
+                      targets.push({ bot: n.instance, nodeId: n.id, uids: snap.docs.map((d: any) => Number(d.id)), botName: `@${n.username}` });
+                   }
+                }
             } else if (state.broadcastType === "ALL_BOTS") {
                const nodes = Array.from(engine.getNodes().values()) as BotNode[];
                for (const n of nodes) {

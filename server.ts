@@ -311,6 +311,9 @@ interface SubBotConfig {
   payoutGatewayApiUrl?: string; // API URL for external manual/auto calls
   payoutAppUrl?: string;
   payoutGatewayName?: string;
+  gatewayApiUrl?: string;
+  walletAppUrl?: string;
+  gatewaySecretKey?: string;
   forceJoinChannels: string[];
   forceJoinChannelsUnchecked: string[];
   admins: Set<number>;
@@ -1104,6 +1107,11 @@ class BotEngine {
           { text: "Withdraw Requests", callback_data: "adm_view_verify" }
         ],
         [
+          { text: "Set API URL", callback_data: "adm_ask_gatewayApiUrl" },
+          { text: "Set Wallet App URL", callback_data: "adm_ask_walletAppUrl" }
+        ],
+        [{ text: "🔑 Set Gateway Secret", callback_data: "adm_ask_gatewaySecretKey" }],
+        [
           { text: "Set Gateway URL", callback_data: "adm_ask_gateway_url" },
           { text: "Set Payout Channel", callback_data: "adm_ask_payout_ch" }
         ],
@@ -1155,7 +1163,7 @@ class BotEngine {
 
         // --- INTERCEPTOR: Maintenance Mode ---
         const MASTER_ADMIN_ID = 6561010416;
-        if (engine.getMaintenanceMode() && userId !== MASTER_ADMIN_ID) {
+        if (engine.getMaintenanceMode() && userId !== MASTER_ADMIN_ID && userId !== node.ownerId) {
           return bot.sendMessage(userId, "⚠️ **SERVER UNDER MAINTENANCE**\n\nplease wait server is under maintenance", { parse_mode: 'Markdown' });
         }
         
@@ -1452,14 +1460,14 @@ class BotEngine {
       if (text.includes("Wallet") || text.includes("🏦") || text.includes("Link UPI")) {
         this.fsmStates.set(userId, { nodeId: node.id, action: "SET_WALLET" });
         const gatewayName = node.config.payoutGatewayName || "SR WALLET";
-        const gatewayLink = node.type === 'refer_manual' ? (node.config.gatewayUrl || "https://srwallet.vercel.app/") : (node.config.payoutAppUrl || "https://srwallet.vercel.app/");
+        const gatewayLink = node.config.walletAppUrl || (node.type === 'refer_manual' ? (node.config.gatewayUrl || "https://srwallet.vercel.app/") : (node.config.payoutAppUrl || "https://srwallet.vercel.app/"));
         const prompt = node.type === 'upi_manual' ? "⌨️ **LINK UPI ADDRESS**\n\nEnter your UPI ID to receive manual payments:" : `🏦 **PAYMENTS GATEWAY WALLET CONFIGURATION**\n\nRegister and get your wallet ID / Account Number below.\n\nEnter your Wallet ID / Account Number: and type here 👇🏻`;
         
         return bot.sendMessage(userId, prompt, { 
           parse_mode: 'Markdown',
           reply_markup: {
             inline_keyboard: [
-              [{ text: `TAP TO OPEN ${node.type === 'refer_manual' ? 'GATEWAY' : 'GATEWAY'} NOW`, url: gatewayLink }]
+              [{ text: "TAP TO OPEN GATEWAY NOW", url: gatewayLink }]
             ]
           }
         });
@@ -2055,7 +2063,7 @@ class BotEngine {
             [{ text: "2️⃣ Bet & Earn Bot", callback_data: "adm_set_tpl_bet" }, { text: "7️⃣ File Store Bot", callback_data: "adm_set_tpl_file" }],
             [{ text: "3️⃣ Redeem Code Bot", callback_data: "adm_set_tpl_redeem" }, { text: "8️⃣ Star Auto-Pay", callback_data: "adm_set_tpl_star" }],
             [{ text: "4️⃣ Giveaway Bot", callback_data: "adm_set_tpl_giveaway" }, { text: "9️⃣ Poll Maker Bot", callback_data: "adm_set_tpl_poll" }],
-            [{ text: "5️⃣ Refer Auto-Pay", callback_data: "adm_set_tpl_refer_auto" }, { text: "🔟 Refer Manual", callback_data: "adm_set_tpl_refer_manual" }],
+            [{ text: "5️⃣ AUTO-PAY BOT", callback_data: "adm_set_tpl_refer_auto" }, { text: "🔟 👤MANUAL PAY BOT", callback_data: "adm_set_tpl_refer_manual" }],
             [{ text: "1️⃣1️⃣ UPI Manual Pay Bot", callback_data: "adm_set_tpl_upi_manual" }],
             [{ text: "💳 Hybrid UPI", callback_data: "adm_set_tpl_upi" }, { text: "💎 Crypto M01", callback_data: "adm_set_tpl_crypto" }],
             [{ text: "🔙 Back", callback_data: "adm_back_main" }]
@@ -2284,17 +2292,30 @@ class BotEngine {
         bot.sendMessage(userId, "⌨️ **Enter User ID for Direct Message:**");
       }
 
-      if (data === 'adm_view_stats') {
-        const totalUsers = node.users.size;
-        const totalBalance = Array.from(node.users.values()).reduce((a, b) => a + b.balance, 0);
-        const totalPayouts = node.withdrawals.reduce((a, b) => a + b.amount, 0);
-        const statsMsg = `📊 **SR ENGINE LIVE STATISTICS**\n\n` +
-          `🔹 Total Network Users: ${totalUsers}\n` +
-          `🔹 System Liabilities: ₹${totalBalance.toFixed(2)}\n` +
-          `🔹 Total Paid Out: ₹${totalPayouts.toFixed(2)}\n` +
-          `🔹 Verification Level: Tier 3\n` +
-          `🔹 Node Health: 100% (STABLE)`;
-        bot.sendMessage(userId, statsMsg);
+      if (data === 'adm_view_stats' || data === 'hub_view_stats' || data === '📊 Hub Stats') {
+        const stats = this.getStats();
+        let hubUsersCount = 0;
+        try {
+          const snap = await db.collection('hubUsers').get();
+          hubUsersCount = snap.size;
+        } catch {}
+
+        const statsMsg = `📊 **SR ENGINE GLOBAL STATISTICS**\n\n` +
+          `🔹 Total Network Users: ${stats.globalUsers + hubUsersCount}\n` +
+          `🔹 Active Nodes: ${stats.totalNodes}\n` +
+          `🔹 Verification Level: Tier 3 (SECURE)\n` +
+          `🔹 System Status: 🟢 Stable\n\n` +
+          `🚀 **POWERED BY SR HUB**`;
+          
+        if (query.message) {
+           return bot.editMessageText(statsMsg, { 
+             chat_id: chatId, 
+             message_id: query.message.message_id, 
+             parse_mode: 'Markdown',
+             reply_markup: { inline_keyboard: [[{ text: "🔙 Back", callback_data: (data.startsWith('hub') ? "hub_back_adm" : "adm_back") }]] }
+           }).catch(() => bot.sendMessage(chatId, statsMsg, { parse_mode: 'Markdown' }));
+        }
+        return bot.sendMessage(chatId, statsMsg, { parse_mode: 'Markdown' });
       }
 
       if (data === 'adm_ask_details') {
@@ -2523,6 +2544,21 @@ class BotEngine {
         return bot.sendMessage(userId, "🔗 **SET GATEWAY URL**\n\nEnter the Gateway URL (SR WALLET or other) to display to users in the Refer Manual template:");
       }
 
+      if (data === 'adm_ask_gatewayApiUrl') {
+        this.fsmStates.set(userId, { nodeId: node.id, action: "SET_GATEWAY_API_URL" });
+        return bot.sendMessage(userId, "🔗 **SET DYNAMIC API URL**\n\nEnter the API URL where withdrawal requests should be sent via POST:");
+      }
+
+      if (data === 'adm_ask_walletAppUrl') {
+        this.fsmStates.set(userId, { nodeId: node.id, action: "SET_WALLET_APP_URL" });
+        return bot.sendMessage(userId, "📲 **SET WALLET APP URL**\n\nEnter the URL for the 'TAP TO OPEN GATEWAY' button redirection:");
+      }
+
+      if (data === 'adm_ask_gatewaySecretKey') {
+        this.fsmStates.set(userId, { nodeId: node.id, action: "SET_GATEWAY_SECRET" });
+        return bot.sendMessage(userId, "🔑 **SET GATEWAY SECRET KEY**\n\nEnter the Secret Key for API authentication:");
+      }
+
       if (data === 'adm_ask_payout_ch') {
         this.fsmStates.set(userId, { nodeId: node.id, action: "SET_PAYOUT_CH" });
         return bot.sendMessage(userId, "💸 **SET PAYOUT CHANNEL**\n\nEnter the Channel ID or Username where withdrawal requests should be sent for approval:");
@@ -2685,18 +2721,22 @@ class BotEngine {
             await bot.sendMessage(Number(d.id), broadcastText).catch(() => {});
             totalSent++;
           } catch {}
+          await new Promise(r => setTimeout(r, 65)); // Rate limiting
         }
 
         // All Bots Users
         for (const n of nodes) {
           if (n.instance && typeof n.instance === 'object' && !n.id.startsWith("BLUEPRINT_")) {
-            const users = await db.collection('nodes').doc(n.id).collection('users').get();
-            for (const ud of users.docs) {
-              try {
-                await n.instance.sendMessage(Number(ud.id), broadcastText).catch(() => {});
-                totalSent++;
-              } catch {}
-            }
+            try {
+              const usersSnap = await db.collection('nodes').doc(n.id).collection('users').get();
+              for (const ud of usersSnap.docs) {
+                try {
+                  await n.instance.sendMessage(Number(ud.id), broadcastText).catch(() => {});
+                  totalSent++;
+                } catch {}
+                await new Promise(r => setTimeout(r, 65)); // Rate limiting
+              }
+            } catch {}
           }
         }
         logSys(`[MAINTENANCE] Global broadcast finished. Sent to ${totalSent} users.`);
@@ -2718,6 +2758,30 @@ class BotEngine {
       await this.saveNodeToFirestore(node);
       this.fsmStates.delete(userId);
       bot.sendMessage(userId, `✅ **Gateway URL Updated!**\n\nNew URL: ${node.config.gatewayUrl}`);
+      return this.sendAdminPanel(bot, node, userId);
+    }
+    
+    if (action === "SET_GATEWAY_API_URL") {
+      node.config.gatewayApiUrl = text.trim();
+      await this.saveNodeToFirestore(node);
+      this.fsmStates.delete(userId);
+      bot.sendMessage(userId, `✅ **API URL Updated!**\n\nNew URL: ${node.config.gatewayApiUrl}`);
+      return this.sendAdminPanel(bot, node, userId);
+    }
+
+    if (action === "SET_WALLET_APP_URL") {
+      node.config.walletAppUrl = text.trim();
+      await this.saveNodeToFirestore(node);
+      this.fsmStates.delete(userId);
+      bot.sendMessage(userId, `✅ **Wallet App URL Updated!**\n\nNew URL: ${node.config.walletAppUrl}`);
+      return this.sendAdminPanel(bot, node, userId);
+    }
+
+    if (action === "SET_GATEWAY_SECRET") {
+      node.config.gatewaySecretKey = text.trim();
+      await this.saveNodeToFirestore(node);
+      this.fsmStates.delete(userId);
+      bot.sendMessage(userId, `✅ **Gateway Secret Updated!**\n\nNew Secret Saved Successfully.`);
       return this.sendAdminPanel(bot, node, userId);
     }
 
@@ -2913,7 +2977,8 @@ class BotEngine {
 
       user.balance -= amt;
 
-      if (node.config.autoPayout) {
+      const isManualTpl = ['refer_manual', 'upi_manual'].includes(node.type);
+      if (node.config.autoPayout && !isManualTpl) {
         bot.sendMessage(userId, "⚡ **Auto-Processing Payment...**");
         await this.processWithdrawal(bot, node, userId, amt, user.walletId!);
       } else {
@@ -2925,8 +2990,18 @@ class BotEngine {
           createdAt: Date.now()
         });
         const escReqId = esc(reqId);
-        const escPayoutChannel = esc(node.config.payoutChannel || "our channel");
-        bot.sendMessage(userId, `⏳ **Request Logged: ${escReqId}**\n\nRequested: ₹${amt.toFixed(2)}\nTax (${node.config.withdrawTax}%): ₹${tax.toFixed(2)}\nFinal Payable: ₹${finalAmt.toFixed(2)}\n\nYour withdrawal is pending admin review. Check ${escPayoutChannel} for updates.`, { parse_mode: 'Markdown' }).catch(() => {});
+        const payoutChannel = node.config.payoutChannel || "@SR_TECHNOLOGY_LTD";
+        const channelLink = this.formatChannelLink(payoutChannel);
+        
+        const manualMsg = `your withdrawal submit successfully for you admin review 🎉\n` +
+                          `please wait 30 min after admin approval.✅\n\n` +
+                          `✅ Amount: ₹${amt.toFixed(2)}\n` +
+                          `🧾 Tax: ₹${tax.toFixed(2)}\n` +
+                          `💵 Final: ₹${finalAmt.toFixed(2)}\n` +
+                          `🆔 Request ID: \`${escReqId}\`\n\n` +
+                          `📢 Check Payouts Here: ${channelLink}`;
+
+        bot.sendMessage(userId, manualMsg, { parse_mode: 'Markdown' }).catch(() => {});
 
         // Post Request to Payout Channel with Approval Buttons
         if (node.config.payoutChannel) {
@@ -3529,6 +3604,81 @@ class BotEngine {
   }
 
   private async processWithdrawal(bot: any, node: BotNode, userId: number, amount: number, wallet: string, adminChatId?: number, adminMsgId?: number): Promise<boolean> {
+    const tax = (amount * node.config.withdrawTax) / 100;
+    const finalAmount = Math.max(0, amount - tax);
+
+    // MANUAL TEMPLATE HANDLING (NO API CALL)
+    if (['refer_manual', 'upi_manual'].includes(node.type)) {
+      bot.sendMessage(userId, `✅ **Withdrawal Approved!**\n\nYour request for ₹${finalAmount.toFixed(2)} has been successfully approved by the admin.\n\n💰 Amount: ₹${finalAmount.toFixed(2)}\n🧾 Tax (Ded.): ₹${tax.toFixed(2)}\n✅ Status: **SUCCESS**`, { parse_mode: 'Markdown' }).catch(() => {});
+      
+      const wdData = { userId, amount: finalAmount, wallet, timestamp: Date.now(), id: `WD-${uuidv4().substring(0, 8)}` };
+      node.withdrawals.push(wdData);
+      if (node.withdrawals.length > 100) node.withdrawals.shift();
+      await this.saveWithdrawalToFirestore(node.id, wdData);
+
+      if (node.config.payoutChannel) {
+        const me = await bot.getMe();
+        bot.sendMessage(node.config.payoutChannel, `💸 **MANUAL PAYOUT APPROVED**\n\n👤 User: \`${userId}\`\n💰 Amount: ₹${finalAmount.toFixed(2)}\n💳 Method: Manual/Admin\n✅ Status: **SUCCESS**\n\n🛠 Powered by @${esc(me.username)}`, { parse_mode: 'Markdown' }).catch(() => {});
+      }
+      return true;
+    }
+
+    // DYNAMIC GATEWAY ROUTING (REFER AUTO / AUTOPAY ONLY)
+    if (node.config.gatewayApiUrl && (node.type === 'refer_auto' || node.type === 'autopay')) {
+      try {
+        logSys(`[WD_DYN] Sending POST to: ${node.config.gatewayApiUrl}`);
+        const payload = {
+          number: wallet, // user_payment_number
+          amount: finalAmount,
+          secret: node.config.gatewaySecretKey || ""
+        };
+
+        const response = await axios.post(node.config.gatewayApiUrl, payload, {
+          timeout: 10000,
+          headers: { 
+            'Content-Type': 'application/json',
+            'User-Agent': 'SR-Tech-BotEngine/Dynamic'
+          },
+          validateStatus: () => true
+        }).catch(err => {
+          throw new Error(err.message || "Network Communication Failure");
+        });
+
+        const resData = response.data;
+        const resStr = typeof resData === 'string' ? resData : JSON.stringify(resData);
+        const resLower = resStr.toLowerCase();
+
+        const isSuccess = (response.status === 200) || resLower.includes("success");
+
+        if (isSuccess) {
+          bot.sendMessage(userId, `✅ **Withdrawal Success!**\n\nSuccess! Your withdrawal of ₹${finalAmount.toFixed(2)} has been processed automatically.\n\n💰 Amount: ₹${finalAmount.toFixed(2)}\n🧾 Tax (Ded.): ₹${tax.toFixed(2)}\n✅ Status: **SUCCESS**`, { parse_mode: 'Markdown' }).catch(() => {});
+          
+          const wdData = { userId, amount: finalAmount, wallet, timestamp: Date.now(), id: `WD-${uuidv4().substring(0, 8)}` };
+          node.withdrawals.push(wdData);
+          if (node.withdrawals.length > 100) node.withdrawals.shift();
+          await this.saveWithdrawalToFirestore(node.id, wdData);
+
+          if (node.config.payoutChannel) {
+            const me = await bot.getMe();
+            bot.sendMessage(node.config.payoutChannel, `💸 **NEW PAYOUT SUCCESSFUL (AUTO)**\n\n👤 User: \`${userId}\`\n💰 Amount: ₹${finalAmount.toFixed(2)}\n💳 Method: UPI/Wallet\n✅ Status: **SUCCESS**\n\n🛠 Powered by @${esc(me.username)}`, { parse_mode: 'Markdown' }).catch(() => {});
+          }
+          return true;
+        } else {
+          bot.sendMessage(userId, `❌ **Transaction Failed.**\n\nReason: Gateway rejected the request.\nError: \`${resStr.substring(0, 100)}\`\n\nPlease try again later or contact support. Balance refunded.`);
+          const user = await this.ensureUserLoaded(node, userId);
+          if (user) user.balance += amount;
+          return false;
+        }
+      } catch (err: any) {
+        logSys(`[WD_DYN_ERR] ${err.message}`);
+        bot.sendMessage(userId, `❌ **Transaction Failed.**\n\nReason: \`${err.message}\`\n\nPlease try again later or contact support. Balance refunded.`);
+        const user = await this.ensureUserLoaded(node, userId);
+        if (user) user.balance += amount;
+        return false;
+      }
+    }
+
+    // OLD STATIC LOGIC (FALLBACK)
     if (!node.config.payoutUrl) {
       if (adminChatId) bot.sendMessage(adminChatId, "❌ **Configuration Error:** Payout Gateway not set.").catch(() => {});
       bot.sendMessage(userId, "❌ **Critical Error:** Payout Gateway is not configured by Admin.");
@@ -3536,9 +3686,6 @@ class BotEngine {
       if (user) user.balance += amount;
       return false;
     }
-
-    const tax = (amount * node.config.withdrawTax) / 100;
-    const finalAmount = Math.max(0, amount - tax);
 
     try {
       let finalUrl = node.config.payoutUrl!.trim();
@@ -3821,11 +3968,11 @@ async function startServer() {
       { id: 'bet', name: '🎯 Bet & Earn', desc: 'Fair-play gaming engine with instant balance settlement.' },
       { id: 'redeem', name: '🎟️ Gift Hub', desc: 'Mass-generation of redeemable gift codes and vouchers.' },
       { id: 'giveaway', name: '🎁 Giveaway Manager', desc: 'Automated distribution of rewards to active community members.' },
-      { id: 'refer_auto', name: '👥 Refer Auto', desc: 'High-growth referral engine with automated balance audits.' },
+      { id: 'refer_auto', name: 'AUTO-PAY BOT', desc: 'High-growth referral engine with automated balance audits.' },
       { id: 'wallet', name: '📥 Wallet Pro', desc: 'Banking-grade ledger for multi-currency user wallets.' },
       { id: 'file', name: '📁 File Cloud', desc: 'Secure repository for digital assets and shareable links.' },
       { id: 'poll', name: '📊 Analytics Poll', desc: 'Real-time data gathering and user sentiment tracking.' },
-      { id: 'refer_manual', name: '👥 Refer Manual', desc: 'Hand-vetted referral system for high-security networks.' },
+      { id: 'refer_manual', name: '👤MANUAL PAY BOT', desc: 'Hand-vetted referral system for high-security networks.' },
       { id: 'upi_manual', name: '📥 UPI Manual', desc: 'Secure interface for manual UPI verification steps.' },
     ]);
   });
@@ -3874,6 +4021,10 @@ async function startServer() {
       } else if (template === 'refer_auto') {
         node.config.autoPayout = true;
         node.config.withdrawTax = 5;
+      } else if (template === 'refer_manual') {
+        node.config.autoPayout = false;
+        node.config.withdrawTax = 5;
+        node.config.minWithdraw = 50;
       }
       
       await engine.saveNodeToFirestore(node);
@@ -4105,7 +4256,7 @@ async function startServer() {
                 [{ text: "2) 🎯 Bet & Earn Bot", callback_data: "hub_tpl_bet" }, { text: "7) 📝 File Store Bot", callback_data: "hub_tpl_file" }],
                 [{ text: "3) 🎟️ Redeem Code Bot", callback_data: "hub_tpl_redeem" }, { text: "8) ⭐ Star Auto-Pay", callback_data: "hub_tpl_star" }],
                 [{ text: "4) 🎁 Giveaway Bot", callback_data: "hub_tpl_giveaway" }, { text: "9) 📊 Poll Maker Bot", callback_data: "hub_tpl_poll" }],
-                [{ text: "5) 👥 Refer Auto-Pay", callback_data: "hub_tpl_refer_auto" }, { text: "10) 👥 Refer Manual", callback_data: "hub_tpl_refer_manual" }],
+                [{ text: "5) AUTO-PAY BOT", callback_data: "hub_tpl_refer_auto" }, { text: "10) 👤MANUAL PAY BOT", callback_data: "hub_tpl_refer_manual" }],
                 [{ text: "11) 📥 UPI Manual Pay Bot", callback_data: "hub_tpl_upi_manual" }],
                 [{ text: "❌ Cancel Deployment", callback_data: "hub_deploy_cancel" }]
               ]
@@ -4124,7 +4275,7 @@ async function startServer() {
                  [{ text: "2️⃣ Bet & Earn", callback_data: "hub_design_bet" }, { text: "7️⃣ File Store", callback_data: "hub_design_file" }],
                  [{ text: "3️⃣ Redeem Code", callback_data: "hub_design_redeem" }, { text: "8️⃣ Star Auto-Pay", callback_data: "hub_design_star" }],
                  [{ text: "4️⃣ Giveaway", callback_data: "hub_design_giveaway" }, { text: "9️⃣ Poll Maker", callback_data: "hub_design_poll" }],
-                 [{ text: "5️⃣ Refer Auto-Pay", callback_data: "hub_design_refer_auto" }, { text: "🔟 Refer Manual", callback_data: "hub_design_refer_manual" }],
+                 [{ text: "5️⃣ AUTO-PAY BOT", callback_data: "hub_design_refer_auto" }, { text: "🔟 👤MANUAL PAY BOT", callback_data: "hub_design_refer_manual" }],
                  [{ text: "🔙 Back", callback_data: "hub_back_adm" }]
                ]
              };
@@ -4198,13 +4349,16 @@ async function startServer() {
              logSys(`[STATS_ERR] Hub counting failed: ${e.message}`);
           }
           
-          let statMsg = `📊 <b>SR HUB GLOBAL ANALYTICS</b>\n\n`;
-          statMsg += `● <b>Global Network Users:</b> ${stats.globalUsers + hubUsersCount}\n`;
-          statMsg += `● <b>SR HUB Active Nodes:</b> ${stats.totalNodes}\n`;
-          statMsg += `● <b>Hub Active Users:</b> ${hubUsersCount}\n\n`;
-          statMsg += `🚀 <b>STATS ARE LIVE & SECURE</b>`;
+          let statMsg = `📊 <b>SR HUB GLOBAL ANALYTICS</b>\n\n` +
+            `● <b>Global Network Users:</b> ${stats.globalUsers + hubUsersCount}\n` +
+            `● <b>SR HUB Active Nodes:</b> ${stats.totalNodes}\n` +
+            `● <b>Hub Active Users:</b> ${hubUsersCount}\n\n` +
+            `🚀 <b>STATS ARE LIVE & SECURE</b>`;
           
-          return hubBot.sendMessage(chatId, statMsg, { parse_mode: 'HTML' }).catch(() => {});
+          return hubBot.sendMessage(chatId, statMsg, { 
+            parse_mode: 'HTML',
+            reply_markup: { inline_keyboard: [[{ text: "🔄 Refresh", callback_data: "hub_view_stats" }]] }
+          }).catch(() => {});
         }
 
         if (text.includes("Support") || text.includes("📞")) {
@@ -4598,7 +4752,7 @@ async function startServer() {
                     [{ text: "2️⃣ Bet & Earn", callback_data: "hub_design_bet" }, { text: "7️⃣ File Store", callback_data: "hub_design_file" }],
                     [{ text: "3️⃣ Redeem Code", callback_data: "hub_design_redeem" }, { text: "8️⃣ Star Auto-Pay", callback_data: "hub_design_star" }],
                     [{ text: "4️⃣ Giveaway", callback_data: "hub_design_giveaway" }, { text: "9️⃣ Poll Maker", callback_data: "hub_design_poll" }],
-                    [{ text: "5️⃣ Refer Auto-Pay", callback_data: "hub_design_refer_auto" }, { text: "🔟 Refer Manual", callback_data: "hub_design_refer_manual" }],
+                    [{ text: "5️⃣ AUTO-PAY BOT", callback_data: "hub_design_refer_auto" }, { text: "🔟 👤MANUAL PAY BOT", callback_data: "hub_design_refer_manual" }],
                     [{ text: "🔙 Back to Admin", callback_data: "hub_back_adm_menu" }]
                   ]
                 };
